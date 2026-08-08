@@ -1,0 +1,107 @@
+================================================================================
+          THIẾT KẾ QUY TRÌNH XÁC THỰC EMAIL ĐĂNG KÝ THAM GIA SỰ KIỆN
+                   (EVENT REGISTRATION EMAIL VERIFICATION SPEC)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. QUY TRÌNH LUỒNG XÁC THỰC (WORKFLOW OVERVIEW)
+--------------------------------------------------------------------------------
+   [Khách điền Form đăng ký /event]
+             │
+             ▼
+   [Hệ thống kiểm tra & Tạo bản ghi Attendee trong DB]
+   - Status: 'unverified' (hoặc is_verified = 0)
+   - verification_token: Mã ngẫu nhiên an toàn (Str::random(64))
+   - token_expires_at: Hạn xác thực trong 24 giờ
+             │
+             ▼
+   [Hiển thị màn hình thông báo: "Vui lòng kiểm tra Email để xác nhận"]
+             │
+             ▼
+   [Gửi Email Xác Thực (Laravel Mailable / Queue Job)]
+   - Tiêu đề: "Xác nhận đăng ký tham gia sự kiện: [Tên Sự Kiện]"
+   - Nội dung: Nút bấm "Xác nhận Email đăng ký" chứa liên kết độc nhất
+             │
+             ▼
+   [Khách nhấp vào Link xác nhận trong Email]
+   - URL: /event/verify-email/{token}
+             │
+             ▼
+   [Hệ thống kiểm tra Token]
+      ├── KHÔNG HỢP LỆ / HẾT HẠN ──► Hiển thị thông báo lỗi & Nút "Gửi lại mail xác nhận"
+      │
+      └── HỢP LỆ (Token khớp & Còn trong hạn 24h)
+             │
+             ▼
+   [Cập nhật Database Attendee]
+   - is_verified = 1
+   - email_verified_at = now()
+   - status = 'confirmed'
+   - verification_token = null
+             │
+             ▼
+   [Gửi Email Xác nhận Thành công & Vé tham dự (Ticket & Calendar)]
+             │
+             ▼
+   [Chuyển hướng đến trang "Xác thực thành công" (/event/thank-you?verified=1)]
+
+--------------------------------------------------------------------------------
+2. CẤU TRÚC DATABASE (DATABASE SCHEMA UPDATES)
+--------------------------------------------------------------------------------
+Thêm các cột quản lý xác thực vào bảng `attendees` (File migration):
+
+Cột                   | Kiểu dữ liệu          | Mô tả
+----------------------+-----------------------+---------------------------------
+is_verified           | boolean, default(0)   | Trạng thái xác thực email (0: Chưa, 1: Đã xác thực)
+email_verified_at     | timestamp, nullable   | Thời điểm khách click xác thực thành công
+verification_token    | varchar(100), nullable| Mã xác thực ngẫu nhiên 64 ký tự độc nhất
+token_expires_at      | timestamp, nullable   | Thời gian hết hạn của token (VD: now()->addHours(24))
+
+--------------------------------------------------------------------------------
+3. CHI TIẾT CÁC THÀNH PHẦN TRIỂN KHAI (IMPLEMENTATION DETAILS)
+--------------------------------------------------------------------------------
+
+A. MAILABLE EMAIL (`app/Mail/VerifyEventRegistrationMail.php`):
+   - Tạo Mailable gửi email HTML định dạng chuyên nghiệp.
+   - Truyền dữ liệu `$attendee`, `$event`, `$verifyUrl`.
+   - Template giao diện email: `resources/views/emails/verify_event_registration.blade.php`.
+
+B. CONTROLLER FRONTEND (`app/Http/Controllers/EventController.php`):
+   1. `register()` & `registerLead()`:
+      - Khởi tạo `Attendee` với `is_verified = 0`, `verification_token = Str::random(64)`, `token_expires_at = now()->addHours(24)`.
+      - Gửi email xác thực: `Mail::to($attendee->email)->queue(new VerifyEventRegistrationMail($attendee));`
+      - Trả về phản hồi cho giao diện: "Đăng ký thành công! Vui lòng kiểm tra hộp thư email của bạn để nhấn liên kết xác nhận."
+
+   2. `verifyEmail(Request $request, $token)`:
+      - Tìm bản ghi `Attendee::where('verification_token', $token)->first();`
+      - Nếu không tìm thấy hoặc `token_expires_at < now()`:
+        -> Trả về view `event-verify-failed` báo lỗi hoặc hết hạn, kèm form gửi lại mã.
+      - Ngược lại (Hợp lệ):
+        -> Update `is_verified = 1`, `email_verified_at = now()`, `status = 'confirmed'`, `verification_token = null`.
+        -> Gửi mail vé tham dự chính thức (`EventRegistrationConfirmedMail`).
+        -> Redirect tới `route('event.thank-you', ['verified' => 1])`.
+
+   3. `resendVerificationEmail(Request $request)`:
+      - Cho phép người dùng nhập lại email để hệ thống tạo `verification_token` mới và gửi lại email xác thực.
+
+C. TRANG QUẢN TRỊ ADMIN (`app/Http/Controllers/Admin/AttendeesController.php`):
+   - Cột "Trạng thái Xác thực Email" trong danh sách Attendee:
+     + Badge Xanh: "Đã xác thực" (`email_verified_at` + thời gian)
+     + Badge Vàng: "Chờ xác thực"
+   - Nút thao tác bổ sung cho Admin:
+     + "Gửi lại mail xác thực" (Resend Verification Email).
+     + "Xác thực thủ công" (Manual Verify / Approve).
+
+--------------------------------------------------------------------------------
+4. BẢNG TỔNG HỢP CÁC FILE CẦN TẠO MỚI & CHỈNH SỬA
+--------------------------------------------------------------------------------
+[TẠO MỚI] database/migrations/2026_08_05_000001_add_verification_fields_to_attendees_table.php
+[TẠO MỚI] app/Mail/VerifyEventRegistrationMail.php
+[TẠO MỚI] app/Mail/EventRegistrationConfirmedMail.php
+[TẠO MỚI] resources/views/emails/verify_event_registration.blade.php
+[TẠO MỚI] resources/views/emails/event_registration_confirmed.blade.php
+[TẠO MỚI] resources/views/event-verify-failed.blade.php
+[SỬA ĐỔI] app/Attendee.php (Thêm fillable: is_verified, email_verified_at, verification_token, token_expires_at)
+[SỬA ĐỔI] app/Http/Controllers/EventController.php (Thêm hàm verifyEmail & resendVerificationEmail)
+[SỬA ĐỔI] routes/web.php (Thêm route /event/verify-email/{token} & /event/resend-verification)
+[SỬA ĐỔI] resources/views/admin/attendees/index.blade.php (Hiển thị trạng thái xác thực & nút gửi lại mail)

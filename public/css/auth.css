@@ -1,0 +1,120 @@
+/* ============================================================
+   Auth pages — Notion design system (ex-auth-form-card)
+   Loaded AFTER adminltev3.css
+   ============================================================ */
+
+body.login-page {
+  background-color: var(--canvas-soft);
+  font-family: var(--font-sans);
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+body.login-page .login-box {
+  width: 100%;
+  max-width: 420px;
+  margin: 0;
+}
+
+body.login-page .login-logo {
+  margin-bottom: var(--space-md);
+  text-align: center;
+}
+
+body.login-page .login-logo a {
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.25px;
+}
+
+body.login-page .login-box .card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+}
+
+body.login-page .card-body {
+  padding: var(--space-lg);
+}
+
+body.login-page .login-box-msg {
+  color: var(--ink-muted);
+  font-size: 15px;
+  margin-bottom: var(--space-lg);
+}
+
+body.login-page .form-control {
+  background: var(--surface);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-xs);
+  color: var(--ink);
+  font-size: 15px;
+  padding: 8px 12px;
+  height: 44px;
+  font-family: var(--font-sans);
+}
+
+body.login-page .form-control:focus {
+  border-color: var(--primary);
+  box-shadow: var(--shadow-soft);
+}
+
+body.login-page .form-control.is-invalid {
+  border-color: var(--accent-orange);
+}
+
+body.login-page .btn-primary {
+  background: var(--primary);
+  border: none;
+  border-radius: var(--radius-full);
+  color: var(--on-primary);
+  font-size: 16px;
+  font-weight: 500;
+  min-height: 44px;
+  padding: 10px 24px;
+  font-family: var(--font-sans);
+}
+
+body.login-page .btn-primary:hover,
+body.login-page .btn-primary:focus,
+body.login-page .btn-primary:not(:disabled):not(.disabled):active {
+  background: var(--primary-active);
+  border: none;
+  color: var(--on-primary);
+}
+
+body.login-page .icheck-primary > input:checked ~ label::before {
+  background-color: var(--primary);
+  border-color: var(--primary);
+}
+
+body.login-page .icheck-primary label {
+  color: var(--ink-secondary);
+  font-size: 15px;
+}
+
+body.login-page a {
+  color: var(--primary);
+  font-size: 15px;
+}
+
+body.login-page a:hover { color: var(--primary-active); }
+
+body.login-page .help-block,
+body.login-page .invalid-feedback {
+  color: var(--accent-orange);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+body.login-page .alert {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--hairline);
+  font-size: 14px;
+}

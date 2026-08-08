@@ -1,0 +1,271 @@
+================================================================================
+    GỬI EMAIL XÁC NHẬN & EMAIL CHỨA MÃ QR CHECK-IN
+         (CONFIRMATION EMAIL & QR CHECK-IN EMAIL SPECIFICATION)
+================================================================================
+
+Phạm vi: Mô tả chi tiết 2 loại email hệ thống gửi tới khách đăng ký sự kiện,
+cùng chức năng tạo & quản lý mã QR trong trang Admin.
+
+================================================================================
+PHẦN 1 — TỔNG QUAN 2 LOẠI EMAIL
+================================================================================
+
+┌─────────────────────────────┬───────────────────────────────────────────────┐
+│ Loại Email                  │ Khi nào gửi                                   │
+├─────────────────────────────┼───────────────────────────────────────────────┤
+│ EMAIL 1: Xác nhận đăng ký   │ Ngay sau khi khách submit form đăng ký        │
+│ EMAIL 2: Vé + Mã QR Check-in│ Ngay sau khi Admin duyệt / xác nhận tham dự  │
+└─────────────────────────────┴───────────────────────────────────────────────┘
+
+================================================================================
+PHẦN 2 — EMAIL 1: EMAIL XÁC NHẬN ĐĂNG KÝ (Registration Confirmation Email)
+================================================================================
+
+MỤC ĐÍCH:
+  Thông báo cho khách biết hệ thống đã nhận đơn đăng ký thành công.
+  Chưa gửi mã QR ở bước này.
+
+THỜI ĐIỂM GỬI:
+  Tự động sau khi khách submit form đăng ký sự kiện thành công.
+  (Trigger: Sau khi tạo bản ghi Attendee trong DB với status = 'pending')
+
+NỘI DUNG EMAIL:
+  - Tiêu đề  : "✅ Xác nhận đăng ký tham dự: [Tên Sự Kiện]"
+  - Logo/Banner sự kiện
+  - Họ và tên khách
+  - Tên sự kiện
+  - Thời gian & địa điểm tổ chức
+  - Thông tin đã đăng ký (Loại vé, Tên công ty, Số điện thoại)
+  - Dòng thông báo:
+      "Đơn đăng ký của bạn đang chờ xác nhận từ Ban tổ chức.
+       Bạn sẽ nhận thêm email chứa Vé QR Check-in khi được duyệt."
+  - Nút: "Xem chi tiết sự kiện" → link tới trang event
+
+FILE TRIỂN KHAI:
+  [TẠO MỚI] app/Mail/AttendeeRegisteredMail.php
+  [TẠO MỚI] resources/views/emails/attendee_registered.blade.php
+
+MÃ GỬI MAIL (trong AttendeeController@store):
+  Mail::to($attendee->email)->send(new AttendeeRegisteredMail($attendee));
+
+================================================================================
+PHẦN 3 — EMAIL 2: VÉ SỰ KIỆN & MÃ QR CHECK-IN (Event Ticket QR Email)
+================================================================================
+
+MỤC ĐÍCH:
+  Gửi "vé điện tử" chính thức cho khách kèm mã QR để quét check-in tại cổng.
+
+THỜI ĐIỂM GỬI:
+  A. Tự động: Khi Admin duyệt đơn (chuyển status từ 'pending' → 'confirmed')
+  B. Thủ công: Admin nhấn nút "Gửi lại Vé QR" trong trang quản lý Attendee
+
+NỘI DUNG EMAIL:
+  - Tiêu đề  : "🎫 Vé tham dự & Mã QR Check-in: [Tên Sự Kiện]"
+  - Banner/Poster sự kiện
+  - Thông tin khách:
+      + Họ và tên
+      + Email
+      + Loại vé / Hạng tham dự
+      + Tên công ty (nếu có)
+  - Khối Mã QR nổi bật (căn giữa, kích thước lớn):
+      + Hình ảnh QR Code nhúng inline (CID attachment hoặc Base64 PNG)
+      + Mã check-in dạng text rút gọn phía dưới QR (VD: ATT-2026-X9K2P8)
+        → Dùng nhập tay khi camera không quét được
+  - Thông tin sự kiện:
+      + Thời gian bắt đầu / kết thúc
+      + Địa điểm (địa chỉ đầy đủ + link Google Maps)
+  - Nút: "Thêm vào Google Calendar" (link ics hoặc Google Calendar URL)
+  - Lưu ý: "Vui lòng xuất trình mã QR này tại quầy đón tiếp sự kiện."
+  - Footer: Thông tin liên hệ BTC
+
+FILE TRIỂN KHAI:
+  [TẠO MỚI] app/Mail/EventTicketQrMail.php
+  [TẠO MỚI] resources/views/emails/event_ticket_qr.blade.php
+
+MÃ GỬI MAIL (trong AttendeeController@approve / AdminController):
+  Mail::to($attendee->email)->send(new EventTicketQrMail($attendee));
+
+================================================================================
+PHẦN 4 — SINH MÃ QR CODE (QR CODE GENERATION)
+================================================================================
+
+THƯ VIỆN SỬ DỤNG:
+  Package: simplesoftwareio/simple-qrcode
+  Cài đặt : composer require simplesoftwareio/simple-qrcode
+
+CẤU TRÚC MÃ CHECK-IN (checkin_code):
+  Format : "ATT-{YEAR}-{RANDOM_8_CHARS}"
+  Ví dụ  : "ATT-2026-X9K2P8AB"
+  Sinh ra : Khi tạo Attendee (trong model boot() hoặc Controller)
+
+  Code sinh mã:
+    $attendee->checkin_code = 'ATT-' . date('Y') . '-' . strtoupper(Str::random(8));
+
+NỘI DUNG MÃ QR:
+  Phương án A (URL): https://yourdomain.com/checkin/{checkin_code}
+    → Cho phép quét bằng camera thường, không cần app
+    → Trả về trang xác nhận tên khách khi quét
+
+  Phương án B (Text thuần): checkin_code
+    → Nhẹ hơn, dùng cho app quét nội bộ ở Admin
+
+  Khuyến nghị: Phương án A nếu muốn hỗ trợ quét bằng camera điện thoại thông thường.
+
+SINH ẢNH QR TRONG MAIL:
+  // Trong EventTicketQrMail.php
+  use SimpleSoftwareIO\QrCode\Facades\QrCode;
+
+  $qrImage = QrCode::format('png')
+                   ->size(300)
+                   ->errorCorrection('H')
+                   ->generate(route('checkin.verify', $this->attendee->checkin_code));
+
+  // Nhúng vào email dạng Base64
+  $qrBase64 = base64_encode($qrImage);
+  // Trong blade: <img src="data:image/png;base64,{{ $qrBase64 }}">
+
+================================================================================
+PHẦN 5 — CHỨC NĂNG TẠO & QUẢN LÝ QR TRONG ADMIN
+================================================================================
+
+5.1. TRANG DANH SÁCH ATTENDEE (resources/views/admin/attendees/index.blade.php)
+------------------------------------------------------------------------
+Thêm cột & nút mới vào bảng danh sách:
+
+  Cột "Mã QR / Check-in":
+    - Badge màu xanh lá: "Đã Check-in" + thời gian (nếu checked_in_at != null)
+    - Badge màu xám: "Chưa Check-in" (nếu checked_in_at == null)
+
+  Cột "Hành động":
+    - Nút [👁 Xem QR]    → Mở modal hiển thị ảnh QR lớn để in/chụp
+    - Nút [📧 Gửi lại Vé] → POST tới route admin.attendees.resend-ticket
+    - Nút [✅ Duyệt]      → Chuyển status → 'confirmed' & tự động gửi Email 2
+
+5.2. MODAL XEM QR CODE (trong trang Admin)
+------------------------------------------------------------------------
+  Hiển thị modal Bootstrap chứa:
+    - Tên khách, Tên sự kiện
+    - Ảnh QR Code lớn (render realtime qua route `/admin/attendees/{id}/qr`)
+    - Mã check-in text: ATT-2026-X9K2P8AB
+    - Nút: [🖨 In QR] (kích hoạt window.print() với CSS print)
+    - Nút: [📥 Tải ảnh QR] → link tải file PNG
+
+5.3. ROUTE RENDER ẢNH QR (GET /admin/attendees/{id}/qr)
+------------------------------------------------------------------------
+  Controller: Admin/AttendeeController@showQr
+  Trả về ảnh PNG của QR Code:
+
+    public function showQr(Attendee $attendee)
+    {
+        $qr = QrCode::format('png')->size(400)->generate($attendee->checkin_code);
+        return response($qr)->header('Content-Type', 'image/png');
+    }
+
+5.4. ROUTE GỬI LẠI VÉ QR (POST /admin/attendees/{id}/resend-ticket)
+------------------------------------------------------------------------
+  Controller: Admin/AttendeeController@resendTicket
+  Logic:
+    1. Tìm Attendee theo $id
+    2. Kiểm tra status == 'confirmed' (không gửi nếu chưa duyệt)
+    3. Mail::to($attendee->email)->send(new EventTicketQrMail($attendee))
+    4. Flash message: "Đã gửi lại vé QR tới email: {$attendee->email}"
+    5. Redirect back
+
+5.5. ROUTE DUYỆT ATTENDEE (POST /admin/attendees/{id}/approve)
+------------------------------------------------------------------------
+  Controller: Admin/AttendeeController@approve
+  Logic:
+    1. Tìm Attendee theo $id
+    2. $attendee->update(['status' => 'confirmed'])
+    3. Tự động gửi Email 2 (Vé QR):
+       Mail::to($attendee->email)->send(new EventTicketQrMail($attendee))
+    4. Flash message thành công
+    5. Redirect back
+
+================================================================================
+PHẦN 6 — DATABASE SCHEMA (Bảng attendees)
+================================================================================
+
+Cột cần có liên quan đến QR & Email:
+
+  Cột                | Kiểu             | Mô tả
+  -------------------+------------------+------------------------------------------
+  checkin_code       | varchar(50) UNIQUE | Mã check-in duy nhất (ATT-YYYY-XXXXXXXX)
+  status             | enum             | pending / confirmed / attended / cancelled
+  ticket_sent_at     | timestamp NULL   | Thời điểm gửi email vé QR lần gần nhất
+  checked_in_at      | timestamp NULL   | Thời điểm check-in thực tế tại cổng
+  checked_in_by      | bigint NULL      | FK → users.id (nhân viên quét mã)
+
+Migration file:
+  [TẠO MỚI] database/migrations/xxxx_add_qr_checkin_fields_to_attendees_table.php
+
+================================================================================
+PHẦN 7 — DANH SÁCH FILE CẦN TẠO & CHỈNH SỬA
+================================================================================
+
+[TẠO MỚI] app/Mail/AttendeeRegisteredMail.php
+             → Email 1: Xác nhận đăng ký (gửi ngay sau khi submit form)
+
+[TẠO MỚI] resources/views/emails/attendee_registered.blade.php
+             → Template HTML email xác nhận đăng ký
+
+[TẠO MỚI] app/Mail/EventTicketQrMail.php
+             → Email 2: Vé điện tử + QR Code (gửi khi được duyệt)
+
+[TẠO MỚI] resources/views/emails/event_ticket_qr.blade.php
+             → Template HTML email vé QR, thiết kế cao cấp, responsive
+
+[SỬA ĐỔI] app/Http/Controllers/Admin/AttendeeController.php
+             → Thêm method: approve(), resendTicket(), showQr()
+
+[SỬA ĐỔI] app/Attendee.php
+             → Thêm fillable: checkin_code, status, ticket_sent_at, checked_in_at, checked_in_by
+             → Thêm boot(): tự sinh checkin_code khi tạo mới
+
+[SỬA ĐỔI] database/migrations/xxxx_create_attendees_table.php (hoặc tạo migration riêng)
+             → Thêm cột: checkin_code, ticket_sent_at, checked_in_at, checked_in_by
+
+[SỬA ĐỔI] routes/web.php
+             → GET  /admin/attendees/{id}/qr              → admin.attendees.qr
+             → POST /admin/attendees/{id}/resend-ticket   → admin.attendees.resend-ticket
+             → POST /admin/attendees/{id}/approve         → admin.attendees.approve
+
+[SỬA ĐỔI] resources/views/admin/attendees/index.blade.php
+             → Thêm cột trạng thái check-in, nút Xem QR, nút Gửi lại Vé, nút Duyệt
+             → Thêm modal Bootstrap hiển thị QR Code
+
+[CÀI ĐẶT] composer require simplesoftwareio/simple-qrcode
+             → Thư viện sinh mã QR Code
+
+================================================================================
+PHẦN 8 — THỨ TỰ TRIỂN KHAI (IMPLEMENTATION ORDER)
+================================================================================
+
+Bước 1: Cài thư viện QR Code
+        composer require simplesoftwareio/simple-qrcode
+
+Bước 2: Tạo/cập nhật migration thêm cột QR & status vào bảng attendees
+        → php artisan migrate
+
+Bước 3: Cập nhật Model Attendee.php (fillable + boot auto-generate checkin_code)
+
+Bước 4: Tạo Mailable Email 1 (AttendeeRegisteredMail + blade template)
+
+Bước 5: Tạo Mailable Email 2 (EventTicketQrMail + blade template với QR nhúng)
+
+Bước 6: Cập nhật AttendeeController: thêm approve(), resendTicket(), showQr()
+
+Bước 7: Thêm routes mới vào routes/web.php
+
+Bước 8: Cập nhật Admin View (index.blade.php): thêm nút + modal QR
+
+Bước 9: Test toàn bộ luồng:
+        - Đăng ký → nhận Email 1
+        - Admin duyệt → nhận Email 2 (kèm QR)
+        - Admin mở modal xem QR
+        - Admin gửi lại vé QR
+        - Quét QR → check-in thành công
+
+================================================================================
+EOF
+================================================================================

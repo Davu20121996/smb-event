@@ -1,0 +1,635 @@
+================================================================================
+        XÂY DỰNG API DASHBOARD CHO ZALO MINI APP
+   (Thông Tin Khách · Trạng Thái Check-in · Voucher · Survey)
+        + GIAO DIỆN ADMIN QUẢN LÝ & THEO DÕI
+================================================================================
+
+Phạm vi: Thiết kế toàn bộ API phục vụ Zalo Mini App hiển thị dashboard cá nhân
+cho từng khách tham dự sự kiện, đồng thời xây dựng giao diện Admin để Ban tổ
+chức theo dõi dữ liệu realtime.
+
+================================================================================
+PHẦN 1 — TỔNG QUAN KIẾN TRÚC
+================================================================================
+
+MÔ HÌNH HOẠT ĐỘNG:
+
+  [Khách mở Zalo Mini App]
+          │
+          ▼
+  [Zalo Mini App gọi API với zalo_user_id / phone]
+          │
+          ▼
+  [Laravel API Server]
+          │
+          ├── /api/zalo/me            → Thông tin cá nhân + đăng ký sự kiện
+          ├── /api/zalo/checkin       → Trạng thái Check-in
+          ├── /api/zalo/voucher       → Voucher đang áp dụng
+          ├── /api/zalo/survey        → Danh sách Survey cần điền
+          └── /api/zalo/dashboard     → Tổng hợp tất cả (1 request duy nhất)
+
+  [Admin mở trang /admin/zalo-dashboard]
+          │
+          ▼
+  [Xem realtime: Tổng khách, Check-in, Voucher, Survey]
+
+AUTH CHO ZALO MINI APP:
+  - Zalo Mini App gửi kèm: zalo_access_token (JWT từ Zalo)
+  - Backend verify token với Zalo API → lấy zalo_user_id
+  - Map zalo_user_id với attendees.zalo_user_id trong DB
+  - Fallback: khách cung cấp phone/email để xác định tài khoản
+
+THÊM CỘT VÀO BẢNG attendees:
+  Cột              | Kiểu          | Mô tả
+  -----------------+---------------+----------------------------------
+  zalo_user_id     | varchar(50)   | ID Zalo của khách (liên kết Mini App)
+  zalo_linked_at   | timestamp NULL| Thời điểm liên kết Zalo
+
+================================================================================
+PHẦN 2 — API DASHBOARD TỔNG HỢP (1 Request Duy Nhất)
+================================================================================
+
+ENDPOINT : GET /api/zalo/dashboard
+MỤC ĐÍCH : Lấy toàn bộ thông tin khách trong 1 lần gọi — tối ưu cho Zalo Mini App.
+AUTH     : Zalo Access Token (Header: Authorization: Bearer {zalo_token})
+
+QUERY PARAMS:
+  - event_id : (optional) Lọc theo sự kiện cụ thể
+
+XỬ LÝ LOGIC:
+  1. Verify Zalo Access Token → lấy zalo_user_id
+  2. Tìm Attendee::where('zalo_user_id', $zalo_user_id)->with([
+       'event', 'voucher', 'surveyResponses', 'checkinLog'
+     ])->first()
+  3. Nếu không tìm thấy → trả về 404 "Bạn chưa đăng ký sự kiện nào"
+  4. Tổng hợp dữ liệu từ tất cả module → trả về 1 JSON
+
+RESPONSE — Thành công (200):
+  {
+    "status": "ok",
+    "data": {
+      "profile"  : { /* Thông tin khách — Phần 3 */ },
+      "checkin"  : { /* Trạng thái Check-in — Phần 4 */ },
+      "voucher"  : { /* Voucher — Phần 5 */ },
+      "survey"   : { /* Survey — Phần 6 */ },
+      "event"    : { /* Thông tin sự kiện — Phần 7 */ }
+    },
+    "generated_at": "2026-09-15 08:30:00"
+  }
+
+RESPONSE — Chưa đăng ký (404):
+  {
+    "status" : "not_found",
+    "message": "Bạn chưa đăng ký tham dự sự kiện nào.",
+    "action" : "Vui lòng đăng ký qua form tại trang sự kiện."
+  }
+
+================================================================================
+PHẦN 3 — THÔNG TIN KHÁCH (Profile Block)
+================================================================================
+
+ENDPOINT RIÊNG: GET /api/zalo/me
+
+Dữ liệu trả về trong block "profile":
+  {
+    "profile": {
+      "attendee_id"   : 42,
+      "name"          : "Nguyễn Văn A",
+      "email"         : "a@abc.com",
+      "phone"         : "0901234567",
+      "company"       : "ABC Corporation",
+      "job_title"     : "CEO",
+      "ticket_type"   : "VIP",
+      "ticket_label"  : "Vé VIP",
+      "registered_at" : "2026-08-10 14:30:00",
+      "status"        : "confirmed",
+      "status_label"  : "Đã xác nhận",
+      "avatar_url"    : "https://zalo.me/avatar/...",
+      "qr_code_url"   : "/api/zalo/qr-code"
+    }
+  }
+
+ENDPOINT QR CODE: GET /api/zalo/qr-code
+  → Trả về ảnh PNG của QR Check-in cá nhân
+  → Content-Type: image/png
+  → Khách có thể lưu ảnh vào camera roll để xuất trình tại cổng
+
+================================================================================
+PHẦN 4 — TRẠNG THÁI CHECK-IN (Checkin Block)
+================================================================================
+
+ENDPOINT RIÊNG: GET /api/zalo/checkin
+
+Dữ liệu trả về trong block "checkin":
+  {
+    "checkin": {
+      "status"           : "not_checked_in",  // hoặc "checked_in"
+      "status_label"     : "Chưa Check-in",
+      "checked_in_at"    : null,              // hoặc "2026-09-15 08:32:11"
+      "checked_in_by"    : null,              // Tên nhân viên quét mã
+      "checkin_code"     : "ATT-2026-X9K2P8AB",
+      "event_date"       : "2026-09-15",
+      "event_time_start" : "08:00",
+      "event_location"   : "Trung tâm Hội nghị GEM Center, TP.HCM",
+      "countdown"        : {
+        "days"   : 10,
+        "hours"  : 4,
+        "minutes": 22,
+        "label"  : "Còn 10 ngày 4 giờ nữa"
+      }
+    }
+  }
+
+HIỂN THỊ TRÊN ZALO MINI APP:
+
+  Chưa Check-in:
+  ┌────────────────────────────────────────┐
+  │  ⏳ CHƯA CHECK-IN                     │  ← Badge xám
+  │  Sự kiện còn: 10 ngày 4 giờ          │
+  │  📍 GEM Center — 15/09/2026 08:00    │
+  │                                        │
+  │  [📱 Hiển thị Mã QR để Check-in]      │
+  └────────────────────────────────────────┘
+
+  Đã Check-in:
+  ┌────────────────────────────────────────┐
+  │  ✅ ĐÃ CHECK-IN THÀNH CÔNG           │  ← Badge xanh
+  │  Vào lúc: 08:32 — 15/09/2026         │
+  │  Quét bởi: Nhân viên Trần Thị B      │
+  └────────────────────────────────────────┘
+
+================================================================================
+PHẦN 5 — VOUCHER BLOCK
+================================================================================
+
+ENDPOINT RIÊNG: GET /api/zalo/voucher
+
+Dữ liệu trả về trong block "voucher":
+
+  --- Có Voucher ---
+  {
+    "voucher": {
+      "has_voucher"     : true,
+      "code"            : "SUMMIT2026VIP",
+      "name"            : "Ưu đãi VIP Early Bird",
+      "type"            : "discount_percent",
+      "value"           : 20,
+      "discount_label"  : "Giảm 20%",
+      "discount_amount" : 200000,
+      "description"     : "Giảm 20% giá vé VIP cho khách đăng ký sớm",
+      "valid_until"     : "2026-09-01 23:59:59",
+      "is_expired"      : false,
+      "source_label"    : "Ban tổ chức tặng",  // hoặc "Bạn tự nhập"
+      "activated_at"    : "2026-08-10 09:32:11"
+    }
+  }
+
+  --- Chưa có Voucher ---
+  {
+    "voucher": {
+      "has_voucher" : false,
+      "message"     : "Bạn chưa có mã voucher nào.",
+      "can_redeem"  : true,
+      "action"      : "Nhập mã voucher nếu bạn có"
+    }
+  }
+
+HIỂN THỊ TRÊN ZALO MINI APP:
+
+  Có voucher:
+  ┌────────────────────────────────────────┐
+  │  🎫 VOUCHER ƯU ĐÃI                   │
+  │  SUMMIT2026VIP                        │  ← Font lớn, bold
+  │  ✨ Giảm 20% — tiết kiệm 200.000đ   │
+  │  "Ưu đãi VIP Early Bird"             │
+  │  HSD: 01/09/2026                     │
+  └────────────────────────────────────────┘
+
+  Chưa có:
+  ┌────────────────────────────────────────┐
+  │  🎫 VOUCHER                           │
+  │  Bạn chưa có mã voucher.             │
+  │  [Nhập mã voucher]                   │
+  └────────────────────────────────────────┘
+
+================================================================================
+PHẦN 6 — SURVEY BLOCK
+================================================================================
+
+ENDPOINT RIÊNG   : GET /api/zalo/survey
+SUBMIT SURVEY    : POST /api/zalo/survey/{survey_id}/submit
+
+Dữ liệu trả về trong block "survey":
+  {
+    "survey": {
+      "total"     : 2,
+      "completed" : 1,
+      "pending"   : 1,
+      "items": [
+        {
+          "id"           : 1,
+          "title"        : "Khảo sát trước sự kiện",
+          "description"  : "Giúp chúng tôi chuẩn bị tốt hơn cho bạn",
+          "deadline"     : "2026-09-14 23:59:59",
+          "is_completed" : true,
+          "completed_at" : "2026-08-20 10:15:00",
+          "reward"       : "Quà lưu niệm"
+        },
+        {
+          "id"           : 2,
+          "title"        : "Khảo sát phản hồi sau sự kiện",
+          "description"  : "Chia sẻ trải nghiệm của bạn",
+          "deadline"     : "2026-09-17 23:59:59",
+          "is_completed" : false,
+          "completed_at" : null,
+          "reward"       : "Voucher 50.000đ cho sự kiện lần sau"
+        }
+      ]
+    }
+  }
+
+DATABASE SURVEY (Bảng cần có):
+
+  Bảng `surveys`:
+    id | event_id | title | description | deadline | reward | status | created_at
+
+  Bảng `survey_questions`:
+    id | survey_id | question | type (text/radio/checkbox/rating) | options_json | order
+
+  Bảng `survey_responses`:
+    id | survey_id | attendee_id | answers_json | completed_at | ip_address
+
+HIỂN THỊ TRÊN ZALO MINI APP:
+
+  ┌────────────────────────────────────────┐
+  │  📋 KHẢO SÁT                          │
+  │  Hoàn thành: 1/2                      │
+  │                                        │
+  │  ✅ Khảo sát trước sự kiện           │
+  │     Đã hoàn thành 20/08/2026         │
+  │                                        │
+  │  ⏳ Phản hồi sau sự kiện             │
+  │     Hạn: 17/09/2026                  │
+  │     🎁 Phần thưởng: Voucher 50k      │
+  │     [Làm khảo sát ngay →]            │
+  └────────────────────────────────────────┘
+
+================================================================================
+PHẦN 7 — THÔNG TIN SỰ KIỆN (Event Block)
+================================================================================
+
+Dữ liệu trả về trong block "event":
+  {
+    "event": {
+      "id"           : 3,
+      "name"         : "Tech Summit 2026",
+      "description"  : "Sự kiện công nghệ lớn nhất năm",
+      "date_start"   : "2026-09-15 08:00:00",
+      "date_end"     : "2026-09-15 18:00:00",
+      "location"     : "GEM Center, 8 Nguyễn Bỉnh Khiêm, Q.1, TP.HCM",
+      "maps_url"     : "https://maps.google.com/?q=GEM+Center",
+      "agenda"       : [
+        { "time": "08:00", "title": "Đón tiếp & Check-in" },
+        { "time": "09:00", "title": "Khai mạc & Keynote Speaker" },
+        { "time": "12:00", "title": "Lunch & Networking" },
+        { "time": "14:00", "title": "Workshop & Panel Discussion" },
+        { "time": "17:00", "title": "Bế mạc & Trao giải" }
+      ],
+      "organizer"    : "ABC Events Co.",
+      "contact_phone": "028 1234 5678",
+      "contact_email": "support@techsummit2026.vn",
+      "social_links" : {
+        "facebook" : "https://fb.com/techsummit2026",
+        "zalo_oa"  : "https://zalo.me/techsummit2026"
+      },
+      "google_calendar_url": "https://calendar.google.com/..."
+    }
+  }
+
+================================================================================
+PHẦN 8 — LAYOUT ZALO MINI APP DASHBOARD
+================================================================================
+
+MÀN HÌNH CHÍNH (Home Screen):
+
+┌──────────────────────────────────────────┐
+│  🎪 Tech Summit 2026                    │
+│  Xin chào, Nguyễn Văn A 👋             │
+│  🎫 Vé VIP  │  ✅ Đã xác nhận         │
+├──────────────────────────────────────────┤
+│                                          │
+│  ┌──────────────────────────────────┐   │
+│  │  ⏳ CHECK-IN                    │   │
+│  │  Còn 10 ngày 4 giờ             │   │
+│  │  [📱 Xem Mã QR]                │   │
+│  └──────────────────────────────────┘   │
+│                                          │
+│  ┌──────────────────────────────────┐   │
+│  │  🎫 VOUCHER                     │   │
+│  │  SUMMIT2026VIP — Giảm 20%      │   │
+│  └──────────────────────────────────┘   │
+│                                          │
+│  ┌──────────────────────────────────┐   │
+│  │  📋 KHẢO SÁT  1/2 hoàn thành   │   │
+│  │  ⚠️ Còn 1 khảo sát chưa làm    │   │
+│  │  [Làm ngay →]                   │   │
+│  └──────────────────────────────────┘   │
+│                                          │
+│  ┌──────────────────────────────────┐   │
+│  │  📅 LỊCH TRÌNH SỰ KIỆN          │   │
+│  │  08:00 Đón tiếp & Check-in      │   │
+│  │  09:00 Khai mạc...              │   │
+│  │  [Xem đầy đủ →]                 │   │
+│  └──────────────────────────────────┘   │
+│                                          │
+│  📍 GEM Center, Q.1, TP.HCM           │
+│  [🗺 Xem bản đồ]  [📞 Liên hệ BTC]    │
+└──────────────────────────────────────────┘
+
+MÀN HÌNH QR CODE (khi nhấn "Xem Mã QR"):
+
+┌──────────────────────────────────────────┐
+│  📱 MÃ QR CHECK-IN CỦA BẠN             │
+│──────────────────────────────────────────│
+│                                          │
+│     ┌────────────────────────────┐       │
+│     │                            │       │
+│     │    [QR CODE IMAGE LARGE]   │       │
+│     │                            │       │
+│     └────────────────────────────┘       │
+│                                          │
+│     ATT-2026-X9K2P8AB                   │  ← Mã text bên dưới
+│                                          │
+│  👤 Nguyễn Văn A                        │
+│  🎫 Vé VIP — Tech Summit 2026           │
+│  📅 15/09/2026                          │
+│                                          │
+│  "Xuất trình mã QR này tại cổng sự kiện"│
+│                                          │
+│  [💾 Lưu ảnh QR]  [📤 Chia sẻ]         │
+└──────────────────────────────────────────┘
+
+================================================================================
+PHẦN 9 — GIAO DIỆN ADMIN: DASHBOARD THEO DÕI ZALO MINI APP
+================================================================================
+
+URL  : GET /admin/zalo-dashboard
+File : resources/views/admin/zalo_dashboard/index.blade.php
+
+9.1. HEADER THỐNG KÊ TỔNG QUAN (Cards realtime — cập nhật mỗi 30 giây)
+-----------------------------------------------------------------------
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  ZALO MINI APP DASHBOARD — Tech Summit 2026           [🔄 Tải lại]  │
+├──────────────┬──────────────┬──────────────┬──────────────┬──────────┤
+│ 👥 Đã kết nối│ ✅ Check-in │ 🎫 Dùng      │ 📋 Khảo sát  │ 📊 Tỷ lệ│
+│   Zalo       │ qua Zalo    │ Voucher      │ Hoàn thành   │ Gắn kết  │
+│              │             │              │              │          │
+│    187       │     124     │      56      │     143      │   74.8%  │
+│  / 250 kh    │ / 187 kh    │  / 187 kh    │  / 187 kh    │          │
+└──────────────┴──────────────┴──────────────┴──────────────┴──────────┘
+
+9.2. BẢNG DANH SÁCH ATTENDEE + TRẠNG THÁI ZALO
+-----------------------------------------------------------------------
+
+Filter:
+  [🔍 Tìm tên/email/phone]  [Trạng thái Zalo ▼]  [Check-in ▼]  [Voucher ▼]
+
+┌──┬───────────────┬──────────┬─────────────┬────────────────┬───────────────┐
+│# │ Tên Khách     │ Zalo     │ Check-in    │ Voucher        │ Survey        │
+├──┼───────────────┼──────────┼─────────────┼────────────────┼───────────────┤
+│1 │ Nguyễn Văn A  │ ✅ Linked│ ✅ 08:32   │ SMVIP (-20%)  │ ✅ 2/2        │
+│2 │ Trần Thị B    │ ✅ Linked│ ⏳ Chưa    │ Chưa có       │ ⚠️ 1/2       │
+│3 │ Lê Hoàng C    │ ❌ Chưa  │ ⏳ Chưa    │ GIFT25        │ ❌ 0/2        │
+└──┴───────────────┴──────────┴─────────────┴────────────────┴───────────────┘
+
+Chú thích cột Zalo:
+  ✅ Linked  → Khách đã mở Zalo Mini App và liên kết tài khoản
+  ❌ Chưa   → Khách chưa dùng Zalo Mini App
+
+Nút hành động cuối bảng:
+  [📨 Gửi Zalo OA message] → Gửi thông báo qua Zalo OA tới khách chưa link
+  [📥 Xuất Excel]
+
+9.3. BIỂU ĐỒ THỐNG KÊ (Charts)
+-----------------------------------------------------------------------
+
+Cột trái (50%): Biểu đồ Donut — Tỷ lệ Zalo Link
+  - Đã kết nối: 187 (74.8%)
+  - Chưa kết nối: 63 (25.2%)
+
+Cột phải (50%): Biểu đồ Timeline — Check-in theo giờ
+  - Trục X: 07:00 → 10:00 (giờ tổ chức)
+  - Trục Y: Số lượng check-in
+  - Bar chart cập nhật realtime khi sự kiện diễn ra
+
+9.4. BẢNG SURVEY OVERVIEW
+-----------------------------------------------------------------------
+
+┌──────────────────────────┬──────────┬──────────┬──────────┬───────────┐
+│ Tên Khảo Sát             │ Tổng     │ Đã làm   │ Chưa làm │ Tỷ lệ    │
+├──────────────────────────┼──────────┼──────────┼──────────┼───────────┤
+│ Khảo sát trước sự kiện  │ 187      │ 143      │ 44       │ 76.5%    │
+│ Phản hồi sau sự kiện    │ 187      │ 12       │ 175      │ 6.4%     │
+└──────────────────────────┴──────────┴──────────┴──────────┴───────────┘
+
+Nút: [📊 Xem chi tiết kết quả Survey]
+
+9.5. BẢNG VOUCHER OVERVIEW
+-----------------------------------------------------------------------
+
+┌──────────────┬────────┬──────────┬──────────┬──────────────────────────┐
+│ Mã Voucher   │ Loại   │ Max dùng │ Đã dùng  │ Qua Zalo Mini App        │
+├──────────────┼────────┼──────────┼──────────┼──────────────────────────┤
+│ SUMMIT2026VIP│ -20%   │ 50       │ 32       │ 28 (87.5% qua Zalo)     │
+│ GIFT25       │ Gift   │ ∞        │ 15       │ 10 (66.7% qua Zalo)     │
+└──────────────┴────────┴──────────┴──────────┴──────────────────────────┘
+
+9.6. TAB LỊCH SỬ HOẠT ĐỘNG ZALO (Activity Log)
+-----------------------------------------------------------------------
+
+Hiển thị 20 hoạt động gần nhất từ Zalo Mini App:
+
+  08:47 — Nguyễn Văn A đã mở Mini App và xem QR Code
+  08:45 — Trần Thị B đã hoàn thành Survey "Khảo sát trước sự kiện"
+  08:32 — Nguyễn Văn A đã Check-in qua Zalo QR
+  08:20 — Lê Hoàng C đã liên kết tài khoản Zalo
+  08:15 — Phạm Thị D đã nhập voucher GIFT25 qua Mini App
+
+================================================================================
+PHẦN 10 — DATABASE SCHEMA BỔ SUNG
+================================================================================
+
+Bảng `zalo_activity_logs`:
+  Cột              | Kiểu           | Mô tả
+  -----------------+----------------+------------------------------------------
+  id               | bigint PK      |
+  attendee_id      | bigint FK      | FK → attendees.id
+  event_type       | varchar(50)    | open_app / view_qr / checkin / submit_survey
+                   |                | redeem_voucher / link_account / view_event
+  metadata         | json NULL      | Dữ liệu bổ sung (survey_id, voucher_code...)
+  ip_address       | varchar(45)    | IP thiết bị
+  created_at       | timestamp      |
+
+Bảng `surveys`:
+  id | event_id | title | description | deadline | reward | status | created_at
+
+Bảng `survey_questions`:
+  id | survey_id | question | type | options_json | is_required | order
+
+Bảng `survey_responses`:
+  id | survey_id | attendee_id | answers_json | completed_at
+
+Cột bổ sung vào `attendees`:
+  zalo_user_id   | varchar(50) NULL  | ID Zalo
+  zalo_linked_at | timestamp NULL    | Thời điểm liên kết
+
+================================================================================
+PHẦN 11 — ROUTES
+================================================================================
+
+// Public API cho Zalo Mini App
+Route::prefix('api/zalo')->middleware(['zalo.auth'])->name('api.zalo.')
+     ->group(function () {
+
+    Route::get('/dashboard', [ZaloDashboardApiController::class, 'dashboard'])
+         ->name('dashboard');                    // Tổng hợp tất cả
+
+    Route::get('/me',        [ZaloDashboardApiController::class, 'me'])
+         ->name('me');                           // Thông tin khách
+
+    Route::get('/qr-code',   [ZaloDashboardApiController::class, 'qrCode'])
+         ->name('qr-code');                      // Ảnh QR PNG
+
+    Route::get('/checkin',   [ZaloDashboardApiController::class, 'checkin'])
+         ->name('checkin');                      // Trạng thái check-in
+
+    Route::get('/voucher',   [ZaloDashboardApiController::class, 'voucher'])
+         ->name('voucher');                      // Voucher của khách
+
+    Route::post('/voucher/redeem', [ZaloDashboardApiController::class, 'redeemVoucher'])
+         ->name('voucher.redeem');               // Khách nhập mã voucher qua app
+
+    Route::get('/survey',    [ZaloDashboardApiController::class, 'survey'])
+         ->name('survey');                       // Danh sách survey
+
+    Route::post('/survey/{id}/submit', [ZaloDashboardApiController::class, 'submitSurvey'])
+         ->name('survey.submit');               // Nộp bài survey
+
+    Route::get('/event',     [ZaloDashboardApiController::class, 'event'])
+         ->name('event');                        // Thông tin sự kiện
+});
+
+// Admin Dashboard
+Route::prefix('admin/zalo-dashboard')->middleware(['auth'])->name('admin.zalo-dashboard.')
+     ->group(function () {
+
+    Route::get('/',       [AdminZaloDashboardController::class, 'index'])->name('index');
+    Route::get('/stats',  [AdminZaloDashboardController::class, 'stats'])->name('stats');
+    Route::get('/logs',   [AdminZaloDashboardController::class, 'logs'])->name('logs');
+});
+
+================================================================================
+PHẦN 12 — MIDDLEWARE ZALO AUTH (zalo.auth)
+================================================================================
+
+File: app/Http/Middleware/ZaloAuthMiddleware.php
+
+Xử lý:
+  1. Lấy Bearer token từ Header: Authorization
+  2. Gọi Zalo API: GET https://graph.zalo.me/v2.0/me?access_token={token}
+     → Trả về: { "id": "zalo_user_id", "name": "...", "picture": {...} }
+  3. Tìm Attendee::where('zalo_user_id', $zaloUserId)->first()
+  4. Nếu chưa liên kết:
+     - Tìm theo phone (nếu Zalo cung cấp số điện thoại)
+     - Nếu tìm thấy → tự động liên kết: attendee->zalo_user_id = $zaloUserId
+     - Nếu không tìm thấy → trả về 404
+  5. Set $request->attendee = $attendee để controller dùng
+
+RESPONSE lỗi token (401):
+  {
+    "status"  : "unauthorized",
+    "message" : "Zalo token không hợp lệ hoặc đã hết hạn."
+  }
+
+================================================================================
+PHẦN 13 — DANH SÁCH FILE CẦN TẠO & CHỈNH SỬA
+================================================================================
+
+[TẠO MỚI] app/Http/Middleware/ZaloAuthMiddleware.php
+             → Verify Zalo access token, map zalo_user_id → Attendee
+
+[TẠO MỚI] app/Http/Controllers/Api/ZaloDashboardApiController.php
+             → Methods: dashboard, me, qrCode, checkin, voucher,
+                        redeemVoucher, survey, submitSurvey, event
+
+[TẠO MỚI] app/Http/Controllers/Admin/AdminZaloDashboardController.php
+             → Methods: index, stats, logs
+
+[TẠO MỚI] app/Models/Survey.php
+[TẠO MỚI] app/Models/SurveyQuestion.php
+[TẠO MỚI] app/Models/SurveyResponse.php
+[TẠO MỚI] app/Models/ZaloActivityLog.php
+
+[TẠO MỚI] database/migrations/xxxx_create_surveys_table.php
+[TẠO MỚI] database/migrations/xxxx_create_survey_questions_table.php
+[TẠO MỚI] database/migrations/xxxx_create_survey_responses_table.php
+[TẠO MỚI] database/migrations/xxxx_create_zalo_activity_logs_table.php
+[TẠO MỚI] database/migrations/xxxx_add_zalo_fields_to_attendees_table.php
+
+[TẠO MỚI] resources/views/admin/zalo_dashboard/index.blade.php
+             → Dashboard Admin: cards thống kê, bảng attendee, biểu đồ,
+               survey overview, voucher overview, activity log
+
+[SỬA ĐỔI] app/Models/Attendee.php
+             → Thêm: zalo_user_id, zalo_linked_at vào fillable
+             → Thêm relationship: hasMany(ZaloActivityLog), hasMany(SurveyResponse)
+
+[SỬA ĐỔI] routes/web.php
+             → Thêm route group api.zalo.* và admin.zalo-dashboard.*
+
+[SỬA ĐỔI] app/Http/Kernel.php
+             → Đăng ký middleware: 'zalo.auth' => ZaloAuthMiddleware::class
+
+[SỬA ĐỔI] resources/views/admin/layouts/sidebar.blade.php (nếu có)
+             → Thêm menu: "Zalo Mini App" với icon Zalo
+
+================================================================================
+PHẦN 14 — THỨ TỰ TRIỂN KHAI
+================================================================================
+
+Bước 1: Tạo tất cả migration mới → php artisan migrate
+
+Bước 2: Tạo Models: Survey, SurveyQuestion, SurveyResponse, ZaloActivityLog
+         + Cập nhật Attendee (fillable, relationships)
+
+Bước 3: Tạo ZaloAuthMiddleware + đăng ký trong Kernel.php
+
+Bước 4: Tạo ZaloDashboardApiController với tất cả endpoints
+
+Bước 5: Tạo AdminZaloDashboardController (index, stats, logs)
+
+Bước 6: Thêm routes vào routes/web.php
+
+Bước 7: Tạo Admin View (resources/views/admin/zalo_dashboard/index.blade.php):
+         - Cards thống kê realtime (polling 30s)
+         - Bảng danh sách attendee + badge trạng thái
+         - Biểu đồ (dùng Chart.js)
+         - Bảng survey overview
+         - Bảng voucher overview
+         - Tab activity log
+
+Bước 8: Thêm menu Zalo vào sidebar Admin
+
+Bước 9: Test toàn bộ:
+         - Gọi /api/zalo/dashboard với Zalo token hợp lệ
+         - Kiểm tra map zalo_user_id vào Attendee
+         - Kiểm tra fallback map qua phone
+         - Submit survey → kiểm tra survey_responses ghi đúng
+         - Nhập voucher qua Mini App → kiểm tra used_count tăng
+         - Admin Dashboard hiển thị đúng số liệu
+         - Biểu đồ realtime cập nhật khi check-in mới
+
+================================================================================
+EOF
+================================================================================

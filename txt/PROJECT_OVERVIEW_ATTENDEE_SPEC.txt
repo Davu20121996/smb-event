@@ -1,0 +1,194 @@
+================================================================================
+                    TỔNG QUAN DỰ ÁN & THIẾT KẾ CHỨC NĂNG ATTENDEE
+                     (PROJECT OVERVIEW & ATTENDEE FEATURE SPEC)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. TỔNG QUAN HỆ THỐNG (PROJECT ARCHITECTURE OVERVIEW)
+--------------------------------------------------------------------------------
+Dự án: Hệ thống Quản lý Sự kiện & Landing Page Doanh nghiệp (EMS-SMB)
+Công nghệ:
+  - Framework: Laravel 11.x (PHP 8.2+)
+  - Đa ngôn ngữ: Hỗ trợ Vi/En với helper tr(), quản lý chuỗi dịch động trong DB.
+  - Quản lý Media: Spatie MediaLibrary (Xử lý ảnh đại diện, banner, gallery, sponsor...).
+  - Giao diện Admin: AdminLTE Custom Theme + Ajax Inline CRUD cho các thành phần con.
+  - Giao diện Frontend: Responsive HTML5/CSS3 (Style system riêng, glassmorphism, dynamic countdown, modal register).
+
+Cấu trúc thư mục chính:
+  - app/                    : Chứa Models, Controllers, Middleware, Form Requests.
+  - app/Http/Controllers/
+      ├── EventController.php       : Xử lý giao diện /event công khai & đăng ký event.
+      ├── HomeController.php        : Trang chủ /, tin tức, dự án, liên hệ, chia sẻ tài liệu.
+      └── Admin/                    : Các Controller quản trị hệ thống:
+            ├── EventsController.php        : Quản lý sự kiện, chuyển đổi sự kiện active, quản lý background PC/Mobile.
+            ├── SpeakersController.php      : Quản lý diễn giả.
+            ├── ScheduleController.php      : Quản lý lịch trình theo ngày.
+            ├── KeyBenefitsController.php   : Quản lý lợi ích chính.
+            ├── VenuesController.php        : Quản lý địa điểm tổ chức.
+            ├── HotelsController.php        : Quản lý khách sạn.
+            ├── GalleriesController.php     : Thư viện ảnh sự kiện.
+            ├── SponsorsController.php      : Quản lý nhà tài trợ.
+            ├── FaqsController.php          : Thường gặp.
+            ├── AmenitiesController.php     : Tiện ích.
+            ├── PricesController.php        : Giá vé sự kiện.
+            ├── ContactMessagesController.php: Quản lý tin nhắn liên hệ.
+            ├── LandingPagesController.php  : Quản lý các trang Landing Page chia sẻ.
+            ├── PostsController.php         : Bài viết/Tin tức.
+            └── MenusController.php         : Quản lý Menu điều hướng.
+  - resources/views/        : Chứa Blade Templates cho Frontend & Admin.
+      ├── event.blade.php           : Giao diện chi tiết trang sự kiện (/event).
+      ├── sections/                 : Các khối giao diện sự kiện (intro, speakers, schedule, venues, gallery, sponsors, faq, buy_ticket, event_register...).
+      ├── admin/                    : Giao diện trang quản trị.
+      └── layouts/main.blade.php    : Layout khung cho Frontend.
+  - routes/web.php          : Định tuyến toàn bộ hệ thống (Frontend & Admin prefix).
+
+--------------------------------------------------------------------------------
+2. HIỆN TRẠNG QUẢN LÝ ĐĂNG KÝ SỰ KIỆN (CURRENT FLOW ANALYSIS)
+--------------------------------------------------------------------------------
+Hiện tại, khi khách truy cập điền form đăng ký tại giao diện /event:
+  - Form Submit gửi tới: `EventController@register` hoặc `EventController@registerLead`.
+  - Dữ liệu đang được lưu trực tiếp vào bảng `contact_messages` (Model `App\ContactMessage`):
+      + `name`: Tên người đăng ký
+      + `email`: Email
+      + `subject`: "Event Registration - [Tên Sự Kiện]"
+      + `message`: Chứa thông tin công ty, số điện thoại hoặc loại vé dưới dạng văn bản nối chuỗi.
+      + `event_id`: ID sự kiện tương ứng.
+
+NHƯỢC ĐIỂM CỦA CÁCH LÀM CŨ:
+  1. Lẫn lộn dữ liệu: Dữ liệu đăng ký tham gia sự kiện bị trộn chung với các tin nhắn liên hệ hỗ trợ / tư vấn chung (`/contact`).
+  2. Bị trích xuất dữ liệu khó khăn: Số điện thoại, tên công ty, loại vé bị gộp chung vào cột `message` dạng text tự do, làm cho việc xuất file Excel, lọc danh sách hoặc thống kê số lượng vé rất phức tạp.
+  3. Khó quản lý trạng thái: Không thể cập nhật trạng thái của khách tham dự (VD: Đã xác nhận, Đã tham gia, Hủy vé, Đã thanh toán...).
+
+--------------------------------------------------------------------------------
+3. THIẾT KẾ & BẢN VẼ CHỨC NĂNG CHUYỂN ĐỔI SANG BẢNG `ATTENDEES` (ATTENDEE SPECIFICATION)
+--------------------------------------------------------------------------------
+
+MỤC TIÊU:
+  Tách riêng hoàn toàn dữ liệu đăng ký sự kiện sang bảng `attendees` riêng biệt với Model `App\Attendee`, quản lý độc lập trong Admin panel, có cột dữ liệu chuẩn hóa (Phone, Company, Ticket Type, Status) và hỗ trợ xuất Excel/Lọc theo sự kiện.
+
+A. CẤU TRÚC BẢNG DATABASE (`attendees` table):
+--------------------------------------------------------------------------------
+File migration: `database/migrations/2026_08_05_000000_create_attendees_table.php`
+
+Cột                   | Kiểu dữ liệu          | Mô tả
+----------------------+-----------------------+---------------------------------
+id                    | bigint, primary key   | Tự tăng
+event_id              | bigint, unsigned      | Khóa ngoại trỏ tới `events.id` (onDelete cascade)
+name                  | varchar(255)          | Họ và tên người đăng ký
+email                 | varchar(255)          | Email liên hệ
+phone                 | varchar(50), nullable | Số điện thoại
+company               | varchar(255), nullable| Tên công ty/Tổ chức
+ticket_type           | varchar(255), nullable| Loạt vé/Gói vé chọn đăng ký
+status                | varchar(50)           | Trạng thái: 'pending' (mặc định), 'confirmed', 'attended', 'cancelled'
+notes                 | text, nullable        | Ghi chú bổ sung (nếu có)
+created_at            | timestamp             | Thời gian đăng ký
+updated_at            | timestamp             | Thời gian cập nhật
+deleted_at            | timestamp, nullable   | Hỗ trợ SoftDeletes
+
+B. ELOQUENT MODEL (`app/Attendee.php`):
+--------------------------------------------------------------------------------
+```php
+<?php
+
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Attendee extends Model
+{
+    use SoftDeletes;
+
+    public $table = 'attendees';
+
+    protected $fillable = [
+        'event_id',
+        'name',
+        'email',
+        'phone',
+        'company',
+        'ticket_type',
+        'status',
+        'notes',
+        'created_at',
+        'updated_at',
+        'deleted_at',
+    ];
+
+    public function event()
+    {
+        return $this->belongsTo(Event::class, 'event_id');
+    }
+}
+```
+
+C. LUỒNG XỬ LÝ FRONTEND (`app/Http/Controllers/EventController.php`):
+--------------------------------------------------------------------------------
+Cập nhật 2 hàm `register` và `registerLead`:
+
+1. `register(Request $request)`:
+   ```php
+   Attendee::create([
+       'event_id'    => $event->id,
+       'name'        => $request->input('name'),
+       'email'       => $request->input('email'),
+       'ticket_type' => $request->input('ticket_type'),
+       'status'      => 'pending',
+   ]);
+   ```
+
+2. `registerLead(Request $request)`:
+   ```php
+   Attendee::create([
+       'event_id'    => $event->id,
+       'name'        => $request->input('name'),
+       'email'       => $request->input('email'),
+       'company'     => $request->input('company'),
+       'phone'       => $request->input('phone'),
+       'status'      => 'pending',
+   ]);
+   ```
+
+D. TRANG QUẢN TRỊ ADMIN (`app/Http/Controllers/Admin/AttendeesController.php`):
+--------------------------------------------------------------------------------
+- **Route Admin**:
+  `Route::resource('attendees', AttendeesController::class)->only(['index', 'show', 'destroy']);`
+  `Route::post('attendees/export', [AttendeesController::class, 'export'])->name('attendees.export');`
+
+- **Tính năng trên giao diện Admin**:
+  1. **Danh sách Attendee (Index)**:
+     - Lọc theo Sự kiện (Dropdown chọn Event).
+     - Bộ lọc tìm kiếm nhanh theo Tên, Email, SĐT, Công ty.
+     - Hiển thị Badge trạng thái (Chờ duyệt / Đã xác nhận / Đã tham gia / Đã hủy).
+     - Cho phép cập nhật nhanh Trạng thái (AJAX / Dropdown update status).
+  2. **Xem chi tiết (Show)**: Xem đầy đủ thông tin khách tham dự & sự kiện đăng ký.
+  3. **Xóa / Xóa hàng loạt (Mass Destroy)**.
+  4. **Xuất file Excel / CSV**: Xuất danh sách danh sách người tham dự theo từng sự kiện.
+
+E. MIGRATION CHUYỂN ĐỔI DỮ LIỆU CŨ (DATA CONVERSION SCRIPT):
+--------------------------------------------------------------------------------
+Viết lệnh Artisan hoặc Migration script để quét lại toàn bộ dữ liệu đăng ký cũ trong `contact_messages`:
+  - Tìm tất cả bản ghi trong `contact_messages` có `event_id IS NOT NULL` hoặc `subject LIKE 'Event Registration%'`.
+  - Tách lấy thông tin `company`, `phone`, `ticket_type` từ cột `message`.
+  - Thêm dữ liệu tương ứng sang bảng `attendees`.
+  - Giữ cho dữ liệu quá khứ không bị mất.
+
+--------------------------------------------------------------------------------
+4. BẢNG TỔNG HỢP CÁC FILE CẦN THÊM & CHỈNH SỬA
+--------------------------------------------------------------------------------
+[TẠO MỚI] database/migrations/2026_08_05_000000_create_attendees_table.php
+[TẠO MỚI] app/Attendee.php
+[TẠO MỚI] app/Http/Controllers/Admin/AttendeesController.php
+[TẠO MỚI] app/Http/Requests/MassDestroyAttendeeRequest.php
+[TẠO MỚI] resources/views/admin/attendees/index.blade.php
+[TẠO MỚI] resources/views/admin/attendees/show.blade.php
+[SỬA ĐỔI] app/Http/Controllers/EventController.php (Lưu trực tiếp vào Attendee)
+[SỬA ĐỔI] routes/web.php (Thêm route admin.attendees)
+[SỬA ĐỔI] resources/views/partials/menu.blade.php (Thêm mục menu Admin: Khách đăng ký Event)
+[TẠO MỚI] database/seeders/MigrateContactMessagesToAttendeesSeeder.php (Chuyển dữ liệu cũ sang mới)
+
+================================================================================
+                         HƯỚNG DẪN TRIỂN KHAI TIẾP THEO
+================================================================================
+Bạn có thể tiến hành triển khai tính năng theo tài liệu cấu trúc chi tiết ở trên. 
+Tất cả các thành phần đã được khảo sát và chuẩn hóa sẵn sàng cho việc nâng cấp.

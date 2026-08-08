@@ -1,0 +1,100 @@
+================================================================================
+    THIẾT KẾ QUY TRÌNH GỬI EMAIL XÁC NHẬN VÀ MÃ QR CHECK-IN TỰ ĐỘNG
+             (EVENT CONFIRMATION & QR CODE CHECK-IN SPECIFICATION)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. QUY TRÌNH LUỒNG TẠO MÃ QR & CHECK-IN (WORKFLOW OVERVIEW)
+--------------------------------------------------------------------------------
+
+[Tự động sau khi Xác thực Email / Đăng ký thành công]
+            │
+            ▼
+[Hệ thống tự động sinh Mã Check-in & QR Code]
+- checkin_code: Mã duy nhất dạng "ATT-2026-[MÃ_NGẪU_NHIÊN]" (VD: ATT-2026-X9K2P8)
+- Tạo hình ảnh QR Code mã hóa chuỗi checkin_code (hoặc URL check-in nhanh)
+            │
+            ▼
+[Gửi Email Vé Sự Kiện & Mã QR (Laravel Mailable / Queue)]
+- Tiêu đề: "Vé tham dự sự kiện & Mã QR Check-in: [Tên Sự Kiện]"
+- Nội dung:
+    + Thông tin chi tiết khách (Họ tên, Email, Loại vé, Tên công ty)
+    + Khối Mã QR Check-in hiển thị nổi bật (nhúng dạng CID inline hoặc Base64/PNG)
+    + Mã check-in văn bản rút gọn (dùng nhập tay khi camera không quét được)
+    + Thông tin thời gian, địa điểm tổ chức & Nút "Thêm vào Google Calendar"
+    + Hướng dẫn: "Vui lòng xuất trình mã QR này tại quầy đón tiếp sự kiện."
+            │
+            ▼
+[Tới Ngày Tổ Chức Sự Kiện — Quy trình Quét Mã Check-in tại Cổng]
+- Nhân viên / BTC mở ứng dụng quét web/mobile tại `/admin/checkin/scan`
+- Đưa Camera quét mã QR trên điện thoại của khách (hoặc máy in vé)
+            │
+            ▼
+[Hệ thống xử lý API Check-in (`POST /admin/checkin/scan`)]
+    ├── NẾU ĐÃ CHECK-IN TRƯỚC ĐÓ ──► Cảnh báo: "Vé này đã check-in lúc [Thời gian]"
+    │
+    └── NẾU HỢP LỆ & CHƯA CHECK-IN
+            │
+            ▼
+[Cập nhật Database Attendee]
+- checked_in_at = now()
+- checked_in_by = id_nhan_vien
+- status = 'attended'
+- Phản hồi giao diện: Âm thanh tinh tinh + Badge xanh "Check-in thành công: [Tên khách]"
+
+--------------------------------------------------------------------------------
+2. CẤU TRÚC DATABASE (DATABASE SCHEMA UPDATES)
+--------------------------------------------------------------------------------
+Thêm các cột quản lý mã QR và Check-in vào bảng `attendees` (File migration):
+
+Cột                   | Kiểu dữ liệu          | Mô tả
+----------------------+-----------------------+---------------------------------
+checkin_code          | varchar(50), unique   | Mã check-in duy nhất (VD: ATT-2026-X9K2P8)
+checked_in_at         | timestamp, nullable   | Thời điểm thực tế khách quét mã tại cổng
+checked_in_by         | bigint, nullable      | ID của Admin/Nhân viên thực hiện quét mã
+
+--------------------------------------------------------------------------------
+3. CHI TIẾT CÁC THÀNH PHẦN TRIỂN KHAI (IMPLEMENTATION DETAILS)
+--------------------------------------------------------------------------------
+
+A. TẠO MÃ QR CODE TRONG LARAVEL:
+   - Thư viện khuyến nghị: `simplesoftwareio/simple-qrcode` hoặc `bacon/bacon-qr-code`.
+   - Sinh ảnh QR Code dạng SVG/PNG từ chuỗi `checkin_code`.
+
+B. MAILABLE EMAIL VÉ SỰ KIỆN (`app/Mail/EventTicketQrMail.php`):
+   - Mailable gửi email HTML định dạng cao cấp (Dark/Light mode hỗ trợ mobile).
+   - Đính kèm/Nhúng ảnh QR Code trực tiếp vào nội dung Email.
+   - Template giao diện: `resources/views/emails/event_ticket_qr.blade.php`.
+
+C. TRANG QUÉT MÃ CHECK-IN DÀNH CHO BÊN TỔ CHỨC (`Admin/CheckinController.php`):
+   1. Giao diện Quét QR Code (`resources/views/admin/checkin/index.blade.php`):
+      - Tích hợp thư viện Javascript Camera QR Scanner (VD: `html5-qrcode` hoặc `jsQR`).
+      - Cho phép chuyển đổi Camera trước/sau trên điện thoại/máy tính bảng.
+      - Có ô nhập tay mã `checkin_code` khi mã QR bị mờ hoặc điện thoại khách bị hỏng màn hình.
+
+   2. API Xử lý Check-in (`POST /admin/checkin/scan`):
+      - Nhận `checkin_code`.
+      - Tra cứu `Attendee::where('checkin_code', $code)->first()`.
+      - Nếu tìm thấy:
+        + Kiểm tra `checked_in_at`: Nếu đã check-in -> Trả về lỗi kèm thời gian đã check-in.
+        + Nếu chưa: Set `checked_in_at = now()`, `status = 'attended'`, `checked_in_by = auth()->id()`.
+      - Trả về JSON chứa thông tin Họ tên, Loại vé, Tên công ty để màn hình hiển thị tức thì.
+
+D. QUẢN LÝ DANH SÁCH & BÁO CÁO CHECK-IN TRONG ADMIN:
+   - Cột "Trạng thái Check-in" trong danh sách Attendee Admin:
+     + Badge Xanh lá: "Đã Check-in" + Thời gian
+     + Badge Xám: "Chưa Check-in"
+   - Thống kê Realtime: Tổng đăng ký, Số lượng đã Check-in, Tỷ lệ tham gia (%).
+   - Nút "Tải lại mã QR" hoặc "Gửi lại Mail Vé QR" cho từng khách hàng trong Admin.
+
+--------------------------------------------------------------------------------
+4. BẢNG TỔNG HỢP CÁC FILE CẦN TẠO MỚI & CHỈNH SỬA
+--------------------------------------------------------------------------------
+[TẠO MỚI] database/migrations/2026_08_05_000002_add_checkin_fields_to_attendees_table.php
+[TẠO MỚI] app/Mail/EventTicketQrMail.php
+[TẠO MỚI] app/Http/Controllers/Admin/CheckinController.php
+[TẠO MỚI] resources/views/emails/event_ticket_qr.blade.php
+[TẠO MỚI] resources/views/admin/checkin/index.blade.php
+[SỬA ĐỔI] app/Attendee.php (Thêm fillable: checkin_code, checked_in_at, checked_in_by)
+[SỬA ĐỔI] routes/web.php (Thêm route admin.checkin.index & admin.checkin.scan)
+[SỬA ĐỔI] resources/views/admin/attendees/index.blade.php (Thêm cột trạng thái check-in & nút gửi vé QR)

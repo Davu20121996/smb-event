@@ -1,0 +1,931 @@
+================================================================================
+        XÂY DỰNG API & GIAO DIỆN QUẢN LÝ VOUCHER SỰ KIỆN
+  (Danh Sách · Tạo Voucher · Gán Voucher · Active Voucher · Nhận Voucher)
+================================================================================
+
+[CẬP NHẬT] Bổ sung 2 tính năng:
+  1. Nút Active Voucher: Ban tổ chức kích hoạt voucher trực tiếp cho 1 khách cụ thể
+  2. API Detail: Lấy toàn bộ thông tin voucher đang áp dụng của 1 Attendee
+
+Phạm vi: Thiết kế toàn bộ hệ thống Voucher cho sự kiện — Admin tạo và gán
+voucher cho khách tham dự, khách áp dụng voucher khi đăng ký để được ưu đãi
+(giảm giá vé, quà tặng, ưu tiên xếp chỗ...).
+
+================================================================================
+PHẦN 1 — TỔNG QUAN HỆ THỐNG VOUCHER
+================================================================================
+
+ĐỊNH NGHĨA:
+  Voucher là mã ưu đãi (coupon code) do Ban tổ chức tạo ra và phát cho khách.
+  Khách nhập mã khi đăng ký sự kiện để áp dụng ưu đãi tương ứng.
+
+CÁC LOẠI VOUCHER:
+
+  Loại               | Mô tả
+  -------------------+---------------------------------------------------------
+  DISCOUNT_PERCENT   | Giảm % giá vé. VD: Giảm 20% giá vé VIP
+  DISCOUNT_FIXED     | Giảm số tiền cố định. VD: Giảm 100.000đ
+  FREE_TICKET        | Vé miễn phí hoàn toàn (giảm 100%)
+  GIFT               | Quà tặng vật lý (không ảnh hưởng giá — ghi chú thêm)
+  PRIORITY_SEAT      | Ưu tiên chọn chỗ ngồi VIP / hàng đầu
+
+LUỒNG TỔNG QUAN:
+
+  [Admin tạo Voucher trong Admin Panel]
+          │
+          ▼
+  [Admin gán Voucher cho Attendee cụ thể HOẶC phát mã công khai]
+          │
+          ├── Gán riêng ──► Email tự động gửi mã Voucher đến khách
+          │
+          └── Mã công khai ──► Khách tự nhập khi đăng ký
+                    │
+                    ▼
+  [Khách nhập mã Voucher tại form đăng ký sự kiện]
+          │
+          ▼
+  [Hệ thống validate: hợp lệ? còn hạn? còn lượt dùng?]
+          │
+          ├── Hợp lệ ──► Áp dụng ưu đãi → Lưu vào attendees.voucher_id
+          │
+          └── Không hợp lệ ──► Thông báo lỗi cụ thể cho khách
+
+  [LUỒNG BỔ SUNG — BAN TỔ CHỨC ACTIVE THỦ CÔNG]
+          │
+          ▼
+  [Admin mở trang chi tiết Attendee hoặc danh sách Attendee]
+          │
+          ▼
+  [Nhấn nút ✅ Active Voucher cho khách này]
+          │
+          ▼
+  [Modal xác nhận: Chọn voucher muốn kích hoạt]
+          │
+          ▼
+  [POST /admin/attendees/{id}/activate-voucher]
+          │
+          ├── Thành công ──► Voucher gắn vào Attendee + Email thông báo
+          │
+          └── Thất bại   ──► Thông báo lỗi (hết lượt, hết hạn...)
+
+================================================================================
+PHẦN 2 — DATABASE SCHEMA (Bảng vouchers)
+================================================================================
+
+Bảng: `vouchers`
+
+  Cột                | Kiểu                   | Mô tả
+  -------------------+------------------------+----------------------------------
+  id                 | bigint PK              |
+  event_id           | bigint FK NULL         | Thuộc sự kiện nào (NULL = toàn hệ thống)
+  code               | varchar(50) UNIQUE     | Mã voucher. VD: SUMMIT2026VIP
+  name               | varchar(255)           | Tên mô tả. VD: "Ưu đãi VIP Early Bird"
+  type               | enum                   | discount_percent / discount_fixed / free_ticket / gift / priority_seat
+  value              | decimal(10,2)          | Giá trị (% hoặc số tiền). Gift/Priority = 0
+  description        | text NULL              | Mô tả chi tiết ưu đãi (hiện cho khách)
+  max_uses           | int NULL               | Tổng số lần dùng tối đa (NULL = không giới hạn)
+  used_count         | int DEFAULT 0          | Số lần đã được dùng
+  is_single_use      | tinyint(1) DEFAULT 0   | 1 = mỗi người chỉ dùng 1 lần
+  is_assignable      | tinyint(1) DEFAULT 1   | 1 = có thể gán cho Attendee cụ thể
+  valid_from         | datetime NULL          | Thời điểm bắt đầu hiệu lực
+  valid_until        | datetime NULL          | Thời điểm hết hạn
+  status             | enum                   | active / inactive / expired
+  created_by         | bigint FK              | FK → users.id
+  created_at         | timestamp              |
+  updated_at         | timestamp              |
+
+---
+
+Bảng: `voucher_attendee` (Bảng pivot — gán voucher cho attendee)
+
+  Cột                | Kiểu                   | Mô tả
+  -------------------+------------------------+----------------------------------
+  id                 | bigint PK              |
+  voucher_id         | bigint FK              | FK → vouchers.id
+  attendee_id        | bigint FK              | FK → attendees.id
+  assigned_by        | bigint FK NULL         | FK → users.id (Admin gán)
+  assigned_at        | timestamp              | Thời điểm được gán
+  used_at            | timestamp NULL         | Thời điểm khách dùng voucher
+  status             | enum                   | assigned / used / expired / revoked
+
+---
+
+Thêm cột vào bảng `attendees`:
+
+  Cột                | Kiểu                   | Mô tả
+  -------------------+------------------------+----------------------------------
+  voucher_id         | bigint FK NULL         | Voucher đã áp dụng khi đăng ký
+  voucher_code       | varchar(50) NULL       | Lưu code tham chiếu (snapshot)
+  discount_amount    | decimal(10,2) DEFAULT 0| Số tiền được giảm thực tế
+
+---
+
+Migration files:
+  [TẠO MỚI] database/migrations/xxxx_create_vouchers_table.php
+  [TẠO MỚI] database/migrations/xxxx_create_voucher_attendee_table.php
+  [SỬA ĐỔI] database/migrations/xxxx_add_voucher_fields_to_attendees_table.php
+
+================================================================================
+PHẦN 3 — API 1: DANH SÁCH VOUCHER (List Vouchers)
+================================================================================
+
+ENDPOINT : GET /admin/vouchers
+MỤC ĐÍCH : Lấy danh sách tất cả voucher, có filter và phân trang.
+
+QUERY PARAMS:
+  - event_id   : Lọc theo sự kiện
+  - status     : active / inactive / expired
+  - type       : Lọc theo loại voucher
+  - search     : Tìm theo code hoặc name
+  - page       : Số trang (mặc định 1)
+  - per_page   : Số item/trang (mặc định 20)
+
+RESPONSE (200):
+  {
+    "data": [
+      {
+        "id"           : 1,
+        "code"         : "SUMMIT2026VIP",
+        "name"         : "Ưu đãi VIP Early Bird",
+        "type"         : "discount_percent",
+        "value"        : 20,
+        "max_uses"     : 50,
+        "used_count"   : 12,
+        "remaining"    : 38,
+        "valid_until"  : "2026-09-01 23:59:59",
+        "status"       : "active",
+        "event_name"   : "Tech Summit 2026"
+      }
+    ],
+    "meta": {
+      "total"        : 15,
+      "per_page"     : 20,
+      "current_page" : 1,
+      "last_page"    : 1
+    }
+  }
+
+================================================================================
+PHẦN 4 — API 2: TẠO VOUCHER MỚI (Create Voucher)
+================================================================================
+
+ENDPOINT : POST /admin/vouchers
+MỤC ĐÍCH : Admin tạo voucher mới cho sự kiện.
+
+REQUEST BODY:
+  {
+    "event_id"      : 3,
+    "code"          : "SUMMIT2026VIP",
+    "name"          : "Ưu đãi VIP Early Bird",
+    "type"          : "discount_percent",
+    "value"         : 20,
+    "description"   : "Giảm 20% giá vé VIP cho 50 khách đăng ký sớm",
+    "max_uses"      : 50,
+    "is_single_use" : true,
+    "valid_from"    : "2026-08-01 00:00:00",
+    "valid_until"   : "2026-09-01 23:59:59",
+    "status"        : "active"
+  }
+
+VALIDATION:
+  - code         : required | string | unique:vouchers,code | max:50 | uppercase
+  - name         : required | string | max:255
+  - type         : required | in:discount_percent,discount_fixed,free_ticket,gift,priority_seat
+  - value        : required_if:type,discount_percent,discount_fixed | numeric | min:0
+  - max_uses     : nullable | integer | min:1
+  - valid_from   : nullable | date
+  - valid_until  : nullable | date | after:valid_from
+  - status       : required | in:active,inactive
+
+TÍNH NĂNG BỔ SUNG — TỰ ĐỘNG SINH MÃ:
+  Nếu không nhập code, hệ thống tự sinh mã ngẫu nhiên:
+  format: "{EVENT_PREFIX}-{RANDOM_6}" VD: "TSM-K9P2X1"
+
+RESPONSE — Thành công (201):
+  {
+    "status"  : "success",
+    "message" : "Tạo voucher thành công.",
+    "data"    : { /* voucher object */ }
+  }
+
+RESPONSE — Trùng mã (422):
+  {
+    "status"  : "error",
+    "message" : "Mã voucher 'SUMMIT2026VIP' đã tồn tại trong hệ thống."
+  }
+
+================================================================================
+PHẦN 5 — API 3: CẬP NHẬT / VÔ HIỆU HÓA VOUCHER
+================================================================================
+
+ENDPOINT : PUT  /admin/vouchers/{id}   — Cập nhật thông tin voucher
+ENDPOINT : POST /admin/vouchers/{id}/deactivate — Vô hiệu hóa voucher
+
+Lưu ý khi UPDATE:
+  - Không cho phép sửa `code` sau khi voucher đã được dùng (used_count > 0)
+  - Không cho phép xóa voucher đã dùng → chỉ deactivate
+
+RESPONSE deactivate (200):
+  {
+    "status"  : "success",
+    "message" : "Voucher SUMMIT2026VIP đã được vô hiệu hóa."
+  }
+
+================================================================================
+PHẦN 6 — API 4: GÁN VOUCHER CHO ATTENDEE (Assign Voucher)
+================================================================================
+
+ENDPOINT : POST /admin/vouchers/{id}/assign
+MỤC ĐÍCH : Admin gán voucher cho 1 hoặc nhiều Attendee cụ thể.
+           Sau khi gán, hệ thống tự gửi email thông báo voucher cho khách.
+
+REQUEST BODY:
+  {
+    "attendee_ids" : [12, 45, 78],
+    "send_email"   : true,
+    "note"         : "Tặng voucher VIP cho khách mời đặc biệt"
+  }
+
+VALIDATION:
+  - attendee_ids : required | array | min:1
+  - attendee_ids.* : exists:attendees,id
+  - send_email   : boolean
+
+XỬ LÝ LOGIC:
+  1. Kiểm tra voucher còn lượt dùng không (used_count < max_uses hoặc max_uses = null)
+  2. Kiểm tra từng attendee_id có tồn tại không
+  3. Kiểm tra attendee chưa được gán voucher này (tránh gán trùng)
+  4. INSERT vào bảng voucher_attendee
+  5. Nếu send_email = true → Queue job gửi email cho từng khách
+
+RESPONSE — Thành công (200):
+  {
+    "status"  : "success",
+    "message" : "Đã gán voucher cho 3 khách.",
+    "assigned": [
+      { "attendee_id": 12, "name": "Nguyễn Văn A", "email": "a@abc.com", "email_sent": true },
+      { "attendee_id": 45, "name": "Trần Thị B",   "email": "b@abc.com", "email_sent": true }
+    ],
+    "skipped" : [
+      { "attendee_id": 78, "reason": "Đã được gán voucher này trước đó" }
+    ]
+  }
+
+RESPONSE — Hết lượt dùng (422):
+  {
+    "status"  : "error",
+    "code"    : "VOUCHER_EXHAUSTED",
+    "message" : "Voucher chỉ còn 2 lượt dùng, không đủ để gán cho 3 khách."
+  }
+
+================================================================================
+PHẦN 7 — API 5: NHẬN / ÁP DỤNG VOUCHER (Redeem Voucher)
+================================================================================
+
+ENDPOINT : POST /api/vouchers/validate
+MỤC ĐÍCH : Khách nhập mã voucher tại form đăng ký — hệ thống kiểm tra
+           và trả về thông tin ưu đãi để hiển thị trước khi submit.
+
+           (KHÔNG PHẢI Public API — chỉ dùng trong form đăng ký có session)
+
+REQUEST BODY:
+  {
+    "code"     : "SUMMIT2026VIP",
+    "event_id" : 3,
+    "email"    : "nguyenvana@example.com"   ← Dùng kiểm tra is_single_use
+  }
+
+XỬ LÝ LOGIC (theo thứ tự):
+  1. Tìm voucher theo code
+     → Không tìm thấy: Lỗi "Mã voucher không hợp lệ"
+  2. Kiểm tra event_id khớp (nếu voucher thuộc event cụ thể)
+     → Không khớp: Lỗi "Mã voucher không áp dụng cho sự kiện này"
+  3. Kiểm tra status = 'active'
+     → Không: Lỗi "Mã voucher đã bị vô hiệu hóa"
+  4. Kiểm tra valid_from ≤ now() ≤ valid_until
+     → Chưa đến hạn: Lỗi "Mã voucher chưa có hiệu lực"
+     → Hết hạn: Lỗi "Mã voucher đã hết hạn"
+  5. Kiểm tra used_count < max_uses (nếu max_uses != null)
+     → Lỗi: "Mã voucher đã hết lượt sử dụng"
+  6. Kiểm tra is_single_use: email này đã dùng voucher này chưa?
+     → Lỗi: "Email của bạn đã sử dụng mã voucher này"
+  7. Hợp lệ → Trả về thông tin ưu đãi
+
+RESPONSE — Hợp lệ (200):
+  {
+    "status" : "valid",
+    "voucher": {
+      "code"          : "SUMMIT2026VIP",
+      "name"          : "Ưu đãi VIP Early Bird",
+      "type"          : "discount_percent",
+      "value"         : 20,
+      "description"   : "Giảm 20% giá vé VIP cho khách đăng ký sớm",
+      "discount_label": "Giảm 20%"
+    }
+  }
+
+RESPONSE — Không hợp lệ (422):
+  {
+    "status"  : "invalid",
+    "code"    : "VOUCHER_EXPIRED",      ← Mã lỗi cụ thể
+    "message" : "Mã voucher đã hết hạn sử dụng."
+  }
+
+---
+
+ENDPOINT : POST /api/vouchers/apply
+MỤC ĐÍCH : Áp dụng voucher chính thức khi khách submit form đăng ký.
+           Gọi đồng thời với việc tạo Attendee.
+
+XỬ LÝ LOGIC:
+  1. Validate lại toàn bộ (tương tự /validate — tránh race condition)
+  2. Tạo Attendee với voucher_id, voucher_code, discount_amount
+  3. Tăng used_count của voucher lên 1
+  4. Cập nhật voucher_attendee.used_at = now() (nếu là voucher gán riêng)
+  5. Trả về Attendee đã tạo
+
+RESPONSE — Thành công (201):
+  {
+    "status"         : "success",
+    "message"        : "Đăng ký thành công với mã ưu đãi SUMMIT2026VIP.",
+    "attendee_id"    : 42,
+    "discount_applied": "Giảm 20% — tiết kiệm 200.000đ"
+  }
+
+================================================================================
+PHẦN 8 — API 6: DANH SÁCH KHÁCH ĐÃ DÙNG VOUCHER
+================================================================================
+
+ENDPOINT : GET /admin/vouchers/{id}/attendees
+MỤC ĐÍCH : Xem danh sách khách đã được gán / đã dùng voucher cụ thể.
+
+RESPONSE (200):
+  {
+    "voucher": {
+      "code"       : "SUMMIT2026VIP",
+      "used_count" : 12,
+      "max_uses"   : 50,
+      "remaining"  : 38
+    },
+    "attendees": [
+      {
+        "id"          : 42,
+        "name"        : "Nguyễn Văn A",
+        "email"       : "a@abc.com",
+        "company"     : "ABC Corp",
+        "assigned_at" : "2026-08-10 09:00:00",
+        "used_at"     : "2026-08-12 14:32:11",
+        "status"      : "used"
+      }
+    ]
+  }
+
+================================================================================
+PHẦN 9 — GIAO DIỆN ADMIN QUẢN LÝ VOUCHER
+================================================================================
+
+9.1. TRANG DANH SÁCH VOUCHER (/admin/vouchers)
+-----------------------------------------------
+URL  : GET /admin/vouchers
+File : resources/views/admin/vouchers/index.blade.php
+
+Bố cục:
+┌─────────────────────────────────────────────────────────────────┐
+│  QUẢN LÝ VOUCHER                          [+ Tạo Voucher mới]  │
+├─────────────────────────────────────────────────────────────────┤
+│  [🔍 Tìm mã/tên...]  [Sự kiện ▼]  [Loại ▼]  [Trạng thái ▼]   │
+├──────┬────────────────┬──────────┬────────┬──────────┬──────────┤
+│  Mã  │  Tên Voucher   │  Loại   │ Đã dùng│  Hạn dùng│  Thao tác│
+├──────┼────────────────┼──────────┼────────┼──────────┼──────────┤
+│SMVIP │Ưu đãi VIP...  │ -20%    │12 /50  │01/09/2026│[👁][✏️][🚫]│
+│GIFT25│Quà tặng...    │ Gift    │ 5 /∞   │ Vô hạn   │[👁][✏️][🚫]│
+└──────┴────────────────┴──────────┴────────┴──────────┴──────────┘
+
+Chú thích cột "Đã dùng":
+  - Thanh progress bar màu xanh/cam/đỏ theo % sử dụng
+  - Xanh: < 70% | Cam: 70–90% | Đỏ: > 90% (gần hết)
+
+Badge trạng thái:
+  - 🟢 Đang hoạt động
+  - 🔴 Vô hiệu hóa
+  - ⚫ Hết hạn
+
+9.2. TRANG TẠO / CHỈNH SỬA VOUCHER (/admin/vouchers/create)
+--------------------------------------------------------------
+File : resources/views/admin/vouchers/create.blade.php
+       resources/views/admin/vouchers/edit.blade.php
+
+Form fields:
+  [Sự kiện áp dụng]           ← Dropdown chọn sự kiện (hoặc "Toàn hệ thống")
+  [Tên voucher *]              ← Text input
+  [Mã voucher *]               ← Text input (UPPERCASE) + nút [🎲 Tự sinh mã]
+  [Loại ưu đãi *]             ← Select: Giảm % / Giảm tiền / Miễn phí / Quà / Ưu tiên
+  [Giá trị *]                 ← Number (ẩn nếu loại = Gift / Priority)
+  [Mô tả]                     ← Textarea (hiển thị cho khách khi nhập mã)
+  [Số lượt dùng tối đa]       ← Number (để trống = không giới hạn)
+  [Mỗi người chỉ dùng 1 lần] ← Checkbox
+  [Thời gian hiệu lực]        ← DateTimePicker from → to
+  [Trạng thái]                ← Toggle: Hoạt động / Vô hiệu
+
+PREVIEW ƯU ĐÃI (real-time):
+  Khi nhập giá trị → hiển thị preview ngay:
+  "Khách sẽ được: Giảm 20% — tương đương -200.000đ trên vé 1.000.000đ"
+
+9.3. TRANG CHI TIẾT VOUCHER (/admin/vouchers/{id})
+---------------------------------------------------
+File : resources/views/admin/vouchers/show.blade.php
+
+Nội dung:
+  - Thông tin chi tiết voucher (mã, loại, hạn dùng...)
+  - Thanh progress sử dụng: [████████░░░░] 12/50 lượt (24%)
+  - Tab "Danh sách khách đã dùng":
+      + Bảng: Tên | Email | Công ty | Gán lúc | Dùng lúc | Trạng thái
+      + Nút [📥 Xuất Excel] danh sách khách dùng voucher
+  - Tab "Gán Voucher":
+      + Tìm kiếm Attendee theo tên/email
+      + Checkbox chọn nhiều → Nút [Gán Voucher]
+      + Checkbox "Gửi email thông báo cho khách"
+
+9.4. MODAL GÁN VOUCHER NHANH (từ trang Attendees)
+--------------------------------------------------
+Trong trang /admin/attendees → nút [🎫 Gán Voucher] mở modal:
+
+┌───────────────────────────────────────────┐
+│  GÁN VOUCHER CHO: Nguyễn Văn A           │
+│───────────────────────────────────────────│
+│  Chọn Voucher:  [SUMMIT2026VIP ▼]        │
+│                  Ưu đãi VIP — Giảm 20%   │
+│                  Còn: 38/50 lượt          │
+│───────────────────────────────────────────│
+│  ☑ Gửi email thông báo voucher cho khách │
+│───────────────────────────────────────────│
+│             [Hủy]   [✅ Gán Voucher]      │
+└───────────────────────────────────────────┘
+
+================================================================================
+PHẦN 10 — GIAO DIỆN KHÁCH NHẬP VOUCHER (Frontend Form)
+================================================================================
+
+Vị trí: Trong form đăng ký sự kiện (public)
+
+┌──────────────────────────────────────────────┐
+│  MÃ GIẢM GIÁ / VOUCHER (nếu có)            │
+│  [___________________________] [Áp dụng]    │
+│                                              │
+│  ✅ SUMMIT2026VIP — Giảm 20%               │  ← Hiện sau khi validate OK
+│     "Ưu đãi VIP Early Bird"                 │
+│     Tiết kiệm: 200.000đ                     │  ← tính real-time
+│                                    [✖ Xóa] │
+└──────────────────────────────────────────────┘
+
+JAVASCRIPT XỬ LÝ:
+  - Khi nhấn [Áp dụng]: gọi AJAX POST /api/vouchers/validate
+  - Nếu valid: hiện banner xanh + cập nhật giá hiển thị
+  - Nếu invalid: hiện thông báo lỗi đỏ ngay dưới input
+  - Lưu voucher code vào hidden input để submit cùng form
+
+================================================================================
+PHẦN 11 — EMAIL THÔNG BÁO VOUCHER CHO KHÁCH
+================================================================================
+
+KÍCH HOẠT: Khi Admin gán voucher và tick "Gửi email thông báo"
+
+NỘI DUNG EMAIL:
+  - Tiêu đề: "🎁 Bạn nhận được voucher ưu đãi từ [Tên Sự Kiện]"
+  - Kính gửi [Tên khách]
+  - Thông báo đã nhận voucher
+  - Hiển thị nổi bật: MÃ VOUCHER (font lớn, có thể copy)
+  - Mô tả ưu đãi
+  - Hạn sử dụng
+  - Hướng dẫn: "Nhập mã này vào ô 'Mã giảm giá' khi đăng ký sự kiện"
+  - Nút: [Đăng ký ngay →] link đến trang sự kiện
+
+FILE:
+  [TẠO MỚI] app/Mail/VoucherAssignedMail.php
+  [TẠO MỚI] resources/views/emails/voucher_assigned.blade.php
+
+================================================================================
+PHẦN 12 — ROUTES CẦN THÊM VÀO routes/web.php
+================================================================================
+
+// Admin Voucher Routes
+Route::prefix('admin/vouchers')->middleware(['auth'])->name('admin.vouchers.')
+     ->group(function () {
+
+    Route::get('/',              [VoucherController::class, 'index'])  ->name('index');
+    Route::get('/create',        [VoucherController::class, 'create']) ->name('create');
+    Route::post('/',             [VoucherController::class, 'store'])  ->name('store');
+    Route::get('/{id}',          [VoucherController::class, 'show'])   ->name('show');
+    Route::get('/{id}/edit',     [VoucherController::class, 'edit'])   ->name('edit');
+    Route::put('/{id}',          [VoucherController::class, 'update']) ->name('update');
+    Route::post('/{id}/deactivate', [VoucherController::class, 'deactivate'])->name('deactivate');
+    Route::post('/{id}/assign',  [VoucherController::class, 'assign']) ->name('assign');
+    Route::get('/{id}/attendees',[VoucherController::class, 'attendees'])->name('attendees');
+});
+
+// Public API (Form đăng ký)
+Route::prefix('api/vouchers')->name('api.vouchers.')->group(function () {
+    Route::post('/validate', [VoucherApiController::class, 'validate'])->name('validate');
+    Route::post('/apply',    [VoucherApiController::class, 'apply'])   ->name('apply');
+});
+
+================================================================================
+PHẦN 13 — DANH SÁCH FILE CẦN TẠO & CHỈNH SỬA
+================================================================================
+
+[TẠO MỚI] database/migrations/xxxx_create_vouchers_table.php
+[TẠO MỚI] database/migrations/xxxx_create_voucher_attendee_table.php
+[TẠO MỚI] database/migrations/xxxx_add_voucher_fields_to_attendees_table.php
+
+[TẠO MỚI] app/Models/Voucher.php
+             → Relationships: belongsTo(Event), hasMany(VoucherAttendee), belongsToMany(Attendee)
+             → Methods: isValid(), getRemainingUsesAttribute(), getDiscountLabelAttribute()
+
+[TẠO MỚI] app/Models/VoucherAttendee.php (Pivot model)
+
+[TẠO MỚI] app/Http/Controllers/Admin/VoucherController.php
+             → Methods: index, create, store, show, edit, update, deactivate, assign, attendees
+
+[TẠO MỚI] app/Http/Controllers/Api/VoucherApiController.php
+             → Methods: validate, apply
+
+[TẠO MỚI] app/Http/Requests/StoreVoucherRequest.php
+[TẠO MỚI] app/Http/Requests/AssignVoucherRequest.php
+[TẠO MỚI] app/Http/Requests/ValidateVoucherRequest.php
+
+[TẠO MỚI] app/Mail/VoucherAssignedMail.php
+[TẠO MỚI] resources/views/emails/voucher_assigned.blade.php
+
+[TẠO MỚI] resources/views/admin/vouchers/index.blade.php
+[TẠO MỚI] resources/views/admin/vouchers/create.blade.php
+[TẠO MỚI] resources/views/admin/vouchers/edit.blade.php
+[TẠO MỚI] resources/views/admin/vouchers/show.blade.php
+
+[SỬA ĐỔI] app/Models/Attendee.php
+             → Thêm: belongsTo(Voucher), fillable voucher_id, voucher_code, discount_amount
+
+[SỬA ĐỔI] resources/views/admin/attendees/index.blade.php
+             → Thêm nút [🎫 Gán Voucher] + modal gán nhanh
+
+[SỬA ĐỔI] resources/views/event-registration-form.blade.php (form đăng ký public)
+             → Thêm ô nhập mã voucher + AJAX validate
+
+================================================================================
+PHẦN 14 — THỨ TỰ TRIỂN KHAI (IMPLEMENTATION ORDER)
+================================================================================
+
+Bước 1: Tạo migration vouchers + voucher_attendee + thêm cột vào attendees
+        → php artisan migrate
+
+Bước 2: Tạo Model Voucher.php + VoucherAttendee.php (relationships, methods)
+
+Bước 3: Cập nhật Model Attendee.php (relationship + fillable)
+
+Bước 4: Tạo Form Request (StoreVoucherRequest, AssignVoucherRequest, ValidateVoucherRequest)
+
+Bước 5: Tạo Admin VoucherController (CRUD + assign + attendees list)
+
+Bước 6: Tạo Api VoucherApiController (validate + apply)
+
+Bước 7: Thêm routes vào routes/web.php
+
+Bước 8: Tạo views Admin (index, create, edit, show + modal gán nhanh)
+
+Bước 9: Tạo Mailable VoucherAssignedMail + template email
+
+Bước 10: Tích hợp ô nhập voucher vào form đăng ký public (AJAX validate)
+
+Bước 11: Test toàn bộ:
+         - Tạo voucher → kiểm tra unique code
+         - Gán cho attendee → kiểm tra email gửi
+         - Khách nhập mã hợp lệ → xem ưu đãi
+         - Khách nhập mã hết hạn → báo lỗi
+         - Khách nhập mã đã dùng (single_use) → báo lỗi
+         - Submit form với voucher → kiểm tra used_count tăng
+         - Admin nhấn Active Voucher → voucher gắn vào Attendee
+         - Gọi API detail Attendee → trả về đúng thông tin voucher
+
+================================================================================
+PHẦN 15 — API: ACTIVE VOUCHER THỦ CÔNG (Ban Tổ Chức Kích Hoạt Cho Khách)
+================================================================================
+
+MỤC ĐÍCH:
+  Ban tổ chức không cần chờ khách tự nhập mã.
+  Admin vào trang quản lý Attendee, nhấn nút [✅ Active Voucher] để gắn
+  voucher trực tiếp vào tài khoản của khách cụ thể đó.
+
+TRƯỜNG HỢP SỬ DỤNG:
+  - Khách VIP được tặng voucher đặc biệt không công khai
+  - Khách gặp sự cố không nhập được mã → Admin active giúp
+  - Ban tổ chức muốn áp dụng ưu đãi hàng loạt cho nhóm khách
+
+--------------------------------------------------------------------------------
+15.1. API ACTIVE VOUCHER (POST)
+--------------------------------------------------------------------------------
+
+ENDPOINT : POST /admin/attendees/{attendee_id}/activate-voucher
+MỤC ĐÍCH : Kích hoạt và gắn voucher vào 1 Attendee cụ thể.
+
+REQUEST BODY:
+  {
+    "voucher_id"   : 5,
+    "send_email"   : true,
+    "note"         : "Voucher tặng thêm cho khách VIP đặc biệt"
+  }
+
+VALIDATION:
+  - voucher_id : required | exists:vouchers,id
+  - send_email : boolean
+  - note       : nullable | string | max:500
+
+XỬ LÝ LOGIC:
+  1. Tìm Attendee theo attendee_id
+  2. Tìm Voucher theo voucher_id
+  3. Kiểm tra Voucher còn hiệu lực:
+     - status = 'active'
+     - now() nằm trong valid_from → valid_until
+     - used_count < max_uses (nếu max_uses != null)
+  4. Kiểm tra Attendee chưa có voucher nào (attendee.voucher_id == null)
+     → Nếu đã có: hỏi xác nhận ghi đè (trả về warning trước)
+  5. Gắn voucher vào Attendee:
+     $attendee->update([
+         'voucher_id'      => $voucher->id,
+         'voucher_code'    => $voucher->code,
+         'discount_amount' => calculateDiscount($voucher, $attendee),
+     ])
+  6. Ghi vào voucher_attendee: status = 'used', used_at = now()
+  7. Tăng voucher.used_count += 1
+  8. Ghi log: ai active, lúc nào, lý do
+  9. Nếu send_email = true → Gửi email thông báo voucher cho khách
+
+RESPONSE — Thành công (200):
+  {
+    "status"  : "success",
+    "message" : "Đã kích hoạt voucher SUMMIT2026VIP cho Nguyễn Văn A.",
+    "data": {
+      "attendee_name"     : "Nguyễn Văn A",
+      "voucher_code"      : "SUMMIT2026VIP",
+      "voucher_name"      : "Ưu đãi VIP Early Bird",
+      "discount_applied"  : "Giảm 20% — 200.000đ",
+      "email_sent"        : true
+    }
+  }
+
+RESPONSE — Attendee đã có voucher (409):
+  {
+    "status"  : "warning",
+    "code"    : "ALREADY_HAS_VOUCHER",
+    "message" : "Khách này đã có voucher 'GIFT25' đang áp dụng. Bạn có muốn thay thế?",
+    "current_voucher": {
+      "code"  : "GIFT25",
+      "name"  : "Voucher quà tặng"
+    }
+  }
+  → Frontend hiển thị modal xác nhận: [Hủy] [Thay thế voucher cũ]
+  → Nếu xác nhận thay thế: gửi lại request kèm "force": true
+
+RESPONSE — Voucher hết lượt (422):
+  {
+    "status"  : "error",
+    "code"    : "VOUCHER_EXHAUSTED",
+    "message" : "Voucher này đã hết lượt sử dụng."
+  }
+
+RESPONSE — Voucher hết hạn (422):
+  {
+    "status"  : "error",
+    "code"    : "VOUCHER_EXPIRED",
+    "message" : "Voucher này đã hết hạn sử dụng."
+  }
+
+--------------------------------------------------------------------------------
+15.2. NÚT ACTIVE VOUCHER TRONG GIAO DIỆN ADMIN
+--------------------------------------------------------------------------------
+
+VỊ TRÍ HIỂN THỊ NÚT:
+  A. Trong bảng danh sách Attendees (inline):
+     → Cột "Voucher": Nếu chưa có voucher → hiện nút [🎫 Active Voucher]
+     → Nếu đã có voucher → hiện badge tên voucher + nút [🔄 Đổi Voucher]
+
+  B. Trong trang chi tiết 1 Attendee (/admin/attendees/{id}):
+     → Khối "Thông tin Voucher":
+
+       ┌────────────────────────────────────────────────┐
+       │  VOUCHER ƯU ĐÃI                               │
+       │──────────────────────────────────────────────  │
+       │  Trạng thái: ⚫ Chưa có voucher               │
+       │                                                │
+       │          [✅ Active Voucher cho khách này]     │
+       └────────────────────────────────────────────────┘
+
+       (Nếu đã có voucher):
+       ┌────────────────────────────────────────────────┐
+       │  VOUCHER ƯU ĐÃI                               │
+       │──────────────────────────────────────────────  │
+       │  Mã: SUMMIT2026VIP                            │
+       │  Tên: Ưu đãi VIP Early Bird                  │
+       │  Ưu đãi: Giảm 20% — 200.000đ                 │
+       │  Kích hoạt lúc: 10/08/2026 09:32             │
+       │  Bởi: Admin Nguyễn                            │
+       │                                                │
+       │  [🔄 Đổi Voucher]  [❌ Thu hồi Voucher]      │
+       └────────────────────────────────────────────────┘
+
+MODAL ACTIVE VOUCHER:
+
+  ┌──────────────────────────────────────────────────┐
+  │  ✅ ACTIVE VOUCHER CHO KHÁCH                    │
+  │  Nguyễn Văn A — ABC Corp                        │
+  │──────────────────────────────────────────────────│
+  │  Chọn Voucher:                                   │
+  │  [SUMMIT2026VIP — Giảm 20% (còn 38 lượt) ▼]    │
+  │                                                  │
+  │  Xem trước ưu đãi:                              │
+  │  ┌──────────────────────────────────────────┐   │
+  │  │ 🎁 Giảm 20% giá vé VIP                  │   │
+  │  │    Tiết kiệm ước tính: ~200.000đ         │   │
+  │  └──────────────────────────────────────────┘   │
+  │                                                  │
+  │  Ghi chú nội bộ: [____________________________]  │
+  │  ☑ Gửi email thông báo voucher cho khách        │
+  │──────────────────────────────────────────────────│
+  │              [Hủy]   [✅ Kích Hoạt]             │
+  └──────────────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+15.3. API THU HỒI VOUCHER (Revoke)
+--------------------------------------------------------------------------------
+
+ENDPOINT : POST /admin/attendees/{attendee_id}/revoke-voucher
+MỤC ĐÍCH : Thu hồi voucher đang gắn vào 1 Attendee (trong trường hợp nhầm).
+
+REQUEST BODY:
+  {
+    "reason": "Gán nhầm voucher — khách không thuộc nhóm này"
+  }
+
+XỬ LÝ LOGIC:
+  1. Tìm Attendee → lấy voucher_id hiện tại
+  2. Reset: attendee.voucher_id = null, voucher_code = null, discount_amount = 0
+  3. Giảm voucher.used_count -= 1
+  4. Cập nhật voucher_attendee.status = 'revoked'
+  5. Ghi log thu hồi
+
+RESPONSE (200):
+  {
+    "status"  : "success",
+    "message" : "Đã thu hồi voucher SUMMIT2026VIP của Nguyễn Văn A."
+  }
+
+================================================================================
+PHẦN 16 — API: CHI TIẾT VOUCHER CỦA 1 ATTENDEE (Get Attendee Voucher Detail)
+================================================================================
+
+MỤC ĐÍCH:
+  Lấy toàn bộ thông tin voucher đang áp dụng của 1 Attendee cụ thể.
+  Dùng cho:
+  - Trang chi tiết Attendee trong Admin
+  - App/màn hình quét check-in muốn hiển thị ưu đãi của khách
+  - Tích hợp bên thứ 3 muốn tra cứu trạng thái voucher của khách
+
+--------------------------------------------------------------------------------
+16.1. API GET VOUCHER CỦA ATTENDEE
+--------------------------------------------------------------------------------
+
+ENDPOINT : GET /admin/attendees/{attendee_id}/voucher
+AUTH     : Yêu cầu đăng nhập Admin
+
+XỬ LÝ LOGIC:
+  1. Tìm Attendee::with('voucher', 'voucherAssignment')->findOrFail($id)
+  2. Nếu attendee.voucher_id == null → trả về "Chưa có voucher"
+  3. Trả về đầy đủ thông tin voucher + lịch sử gán
+
+RESPONSE — Có voucher (200):
+  {
+    "attendee": {
+      "id"    : 42,
+      "name"  : "Nguyễn Văn A",
+      "email" : "a@abc.com"
+    },
+    "voucher": {
+      "id"              : 5,
+      "code"            : "SUMMIT2026VIP",
+      "name"            : "Ưu đãi VIP Early Bird",
+      "type"            : "discount_percent",
+      "value"           : 20,
+      "description"     : "Giảm 20% giá vé VIP cho khách đăng ký sớm",
+      "discount_label"  : "Giảm 20%",
+      "discount_amount" : 200000,
+      "valid_until"     : "2026-09-01 23:59:59",
+      "status"          : "active"
+    },
+    "assignment": {
+      "source"      : "admin_activated",  // hoặc "self_redeemed" (tự nhập)
+      "assigned_by" : "Admin Nguyễn",
+      "assigned_at" : "2026-08-10 09:32:11",
+      "used_at"     : "2026-08-10 09:32:11",
+      "note"        : "Voucher tặng thêm cho khách VIP đặc biệt",
+      "status"      : "used"
+    }
+  }
+
+RESPONSE — Chưa có voucher (200):
+  {
+    "attendee": {
+      "id"    : 42,
+      "name"  : "Nguyễn Văn A",
+      "email" : "a@abc.com"
+    },
+    "voucher"    : null,
+    "assignment" : null,
+    "message"    : "Khách này chưa được gán hoặc áp dụng voucher nào."
+  }
+
+RESPONSE — Không tìm thấy Attendee (404):
+  {
+    "status"  : "error",
+    "message" : "Attendee không tồn tại."
+  }
+
+--------------------------------------------------------------------------------
+16.2. TRƯỜNG assignment.source — PHÂN BIỆT NGUỒN GỐC VOUCHER
+--------------------------------------------------------------------------------
+
+  Giá trị           | Ý nghĩa
+  ------------------+----------------------------------------------------------
+  self_redeemed     | Khách tự nhập mã voucher khi đăng ký
+  admin_activated   | Ban tổ chức kích hoạt thủ công qua nút Active Voucher
+  admin_assigned    | Admin gán qua tính năng Assign hàng loạt (Phần 6)
+
+  → Giá trị này giúp báo cáo phân biệt:
+    "Bao nhiêu khách tự dùng mã" vs "Bao nhiêu khách được BTC tặng thêm"
+
+--------------------------------------------------------------------------------
+16.3. HIỂN THỊ TRONG TRANG CHI TIẾT ATTENDEE (Admin)
+--------------------------------------------------------------------------------
+
+URL  : GET /admin/attendees/{id}
+File : resources/views/admin/attendees/show.blade.php
+
+Khối "Thông tin Voucher" hiển thị dữ liệu từ API GET /voucher:
+
+  ┌──────────────────────────────────────────────────────────┐
+  │  🎫 VOUCHER ƯU ĐÃI                                      │
+  │──────────────────────────────────────────────────────────│
+  │  Mã voucher   : SUMMIT2026VIP                           │
+  │  Tên          : Ưu đãi VIP Early Bird                   │
+  │  Loại         : Giảm 20%                                │
+  │  Giảm thực tế : 200.000đ                                │
+  │  Nguồn        : 🛡 Ban tổ chức kích hoạt               │
+  │                 (hoặc: 👤 Khách tự nhập)                │
+  │  Kích hoạt    : 10/08/2026 09:32 — bởi Admin Nguyễn    │
+  │  Ghi chú BTC  : Voucher tặng thêm cho khách VIP         │
+  │──────────────────────────────────────────────────────────│
+  │  [🔄 Đổi Voucher]          [❌ Thu hồi Voucher]         │
+  └──────────────────────────────────────────────────────────┘
+
+================================================================================
+PHẦN 17 — CẬP NHẬT ROUTES (Bổ sung từ Phần 12)
+================================================================================
+
+// Bổ sung thêm vào group Route admin/attendees
+Route::prefix('admin/attendees')->middleware(['auth'])->name('admin.attendees.')
+     ->group(function () {
+
+    // ... các route cũ ...
+
+    // Active voucher thủ công cho 1 Attendee
+    Route::post('/{id}/activate-voucher', [AttendeeController::class, 'activateVoucher'])
+         ->name('activate-voucher');
+
+    // Thu hồi voucher của 1 Attendee
+    Route::post('/{id}/revoke-voucher',   [AttendeeController::class, 'revokeVoucher'])
+         ->name('revoke-voucher');
+
+    // Lấy chi tiết voucher của 1 Attendee
+    Route::get('/{id}/voucher',           [AttendeeController::class, 'voucherDetail'])
+         ->name('voucher-detail');
+});
+
+================================================================================
+PHẦN 18 — CẬP NHẬT FILE CẦN TẠO & CHỈNH SỬA (Bổ sung từ Phần 13)
+================================================================================
+
+[SỬA ĐỔI] app/Http/Controllers/Admin/AttendeeController.php
+             → Thêm method: activateVoucher(), revokeVoucher(), voucherDetail()
+
+[SỬA ĐỔI] resources/views/admin/attendees/index.blade.php
+             → Thêm cột "Voucher" với badge tên voucher hoặc nút [🎫 Active Voucher]
+             → Thêm modal Active Voucher (chọn voucher + preview + ghi chú + email)
+
+[SỬA ĐỔI] resources/views/admin/attendees/show.blade.php
+             → Thêm khối "Thông tin Voucher" load từ API GET /voucher
+             → Nút [✅ Active Voucher] / [🔄 Đổi] / [❌ Thu hồi]
+
+[SỬA ĐỔI] app/Models/Voucher.php
+             → Thêm method: activateForAttendee(Attendee $attendee, array $options)
+             → Thêm method: revokeFromAttendee(Attendee $attendee, string $reason)
+
+================================================================================
+EOF
+================================================================================

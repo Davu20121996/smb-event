@@ -1,0 +1,78 @@
+TÀI LIỆU ĐẶC TẢ CHỨC NĂNG: DASHBOARD ZALO MINI APP (ADMIN PANEL)
+
+1. Tổng quan (Overview)
+Chức năng này cung cấp một giao diện tổng quan (Dashboard) trên trang Quản trị (Admin Panel) để theo dõi, thống kê và quản lý các dữ liệu tương tác từ Zalo Mini App. Các dữ liệu này được lấy thông qua hệ thống API, bao gồm 4 nhóm thông tin chính:
+- Thông tin khách hàng (Customer Information)
+- Trạng thái Check-in (Check-in Status)
+- Quản lý Voucher (Voucher Management)
+- Khảo sát/Đánh giá (Survey/Feedback)
+
+---
+
+2. Thiết kế Giao diện Admin (Admin UI Design)
+
+2.1. Cấu trúc Layout chung
+- Menu: Nằm ở Sidebar bên trái (Ví dụ: Zalo App > Dashboard).
+- Header: Bộ lọc thời gian toàn cục (Hôm nay, Tuần này, Tháng này, Tùy chỉnh khoảng thời gian) và bộ lọc theo Sự kiện (Event/Campaign).
+- Body: Chia thành các Widget/Khối thống kê trực quan.
+
+2.2. Chi tiết các Widget trên Dashboard
+
+A. Khối Thống kê Tổng quan (Summary Cards)
+Hiển thị ở trên cùng, gồm các thẻ số liệu (Kèm % tăng/giảm so với kỳ trước):
+- Tổng số khách hàng (Total Users).
+- Tổng lượt Check-in thành công.
+- Tỉ lệ quy đổi Voucher (Vouchers Used / Vouchers Issued).
+- Điểm đánh giá trung bình (Average Rating từ Survey).
+
+B. Khối Thông tin Khách hàng (Customer Insights)
+- Biểu đồ: Biểu đồ tròn (Pie Chart) phân loại khách hàng theo độ tuổi/giới tính hoặc nguồn khách (Zalo OA, Share, Ads).
+- Bảng dữ liệu mới nhất: Top 5-10 khách hàng mới tương tác (Avatar, Tên, SĐT ẩn một phần, Ngày tham gia). Có nút "Xem tất cả" dẫn sang trang quản lý User.
+
+C. Khối Trạng thái Check-in (Check-in Monitor)
+- Biểu đồ: Biểu đồ đường/cột (Line/Bar Chart) thể hiện lưu lượng Check-in theo khung giờ hoặc theo ngày.
+- Trạng thái: Tỉ lệ Check-in Thành công vs. Thất bại (hoặc Lỗi mã QR, Sai định vị).
+- Bảng Real-time: Danh sách khách hàng vừa check-in (Tên, Thời gian, Địa điểm/Cổng).
+
+D. Khối Quản lý Voucher (Voucher Metrics)
+- Tiến độ (Progress Bar): Tổng số lượng Voucher đã phát hành vs. Đã sử dụng vs. Đã hết hạn.
+- Bảng xếp hạng: Top các loại Voucher được sử dụng nhiều nhất.
+
+E. Khối Khảo sát (Survey Results)
+- Biểu đồ: Biểu đồ cột ngang thể hiện tỉ lệ các mức độ hài lòng (Rất hài lòng, Hài lòng, Bình thường, Tệ).
+- Feedback: Feed cuộn hiển thị các phản hồi/đánh giá dạng text mới nhất từ khách hàng.
+
+---
+
+3. Đặc tả API Backend (API Specification)
+
+Các API này sẽ được gọi từ Admin Frontend để render dữ liệu lên Dashboard. Tất cả API yêu cầu Header Authorization (Bearer Token của Admin).
+
+3.1. API Tổng quan (Overview Metrics)
+- Endpoint: GET /api/v1/admin/zalo-app/dashboard/summary
+- Params: start_date, end_date, event_id
+- Response: Trả về tổng khách, tổng check-in, tỉ lệ dùng voucher, điểm survey trung bình.
+
+3.2. API Dữ liệu Khách hàng
+- Endpoint: GET /api/v1/admin/zalo-app/dashboard/customers/chart (Dữ liệu vẽ biểu đồ phân loại)
+- Endpoint: GET /api/v1/admin/zalo-app/dashboard/customers/recent (Danh sách KH mới)
+
+3.3. API Trạng thái Check-in
+- Endpoint: GET /api/v1/admin/zalo-app/dashboard/check-in/chart (Dữ liệu vẽ biểu đồ lưu lượng)
+- Endpoint: GET /api/v1/admin/zalo-app/dashboard/check-in/logs (Lịch sử check-in)
+
+3.4. API Thống kê Voucher
+- Endpoint: GET /api/v1/admin/zalo-app/dashboard/vouchers/stats
+- Response: Trả về số lượng đã phát, đã dùng, đã hết hạn và top chiến dịch.
+
+3.5. API Dữ liệu Survey
+- Endpoint: GET /api/v1/admin/zalo-app/dashboard/survey/stats (Thống kê điểm số)
+- Endpoint: GET /api/v1/admin/zalo-app/dashboard/survey/feedbacks (Danh sách text feedback)
+
+---
+
+4. Yêu cầu phi chức năng & Bảo mật
+- Performance: Các API Dashboard thường phải tổng hợp dữ liệu lớn, cần có cơ chế Caching (Redis) với TTL khoảng 5-15 phút để giảm tải cho Database.
+- Real-time (Tùy chọn): Có thể sử dụng WebSocket/Pusher cho phần "Bảng check-in Real-time" để giao diện tự nhảy dữ liệu mà không cần F5.
+- Phân quyền (RBAC): Chỉ những tài khoản Admin có quyền view_zalo_dashboard mới được truy cập UI và gọi các API này.
+- Export: Tại mỗi Widget hoặc góc trên Dashboard, nên có nút Export Excel/CSV gọi đến các API export tương ứng.

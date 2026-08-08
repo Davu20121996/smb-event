@@ -1,0 +1,343 @@
+/* ============================================================
+   EVENT REGISTER SECTION
+   ============================================================ */
+
+#intro.hero-home { height: 50vh; min-height: 420px; }
+
+#intro.hero-home .hero-inner { height: 50vh; min-height: 420px; }
+
+.register-section { padding: 80px 0; background: #f5f7fa; }
+
+.register-section .register-title { font-size: 51px; font-weight: 800; line-height: 1.1; letter-spacing: -0.5px; color: #1a2332; margin-top: 8px; }
+
+.register-section .register-desc { font-size: 21px; color: #5a6a7a; margin-top: 10px; max-width: 640px; margin-left: auto; margin-right: auto; line-height: 1.6; }
+
+#contact .register-title { font-size: 36px; font-weight: 800; letter-spacing: -1px; margin-top: 8px; background: none; border: none; border-radius: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; padding: 0; }
+
+#contact .register-title:hover { transform: none; border-color: transparent; box-shadow: none; letter-spacing: -1px; }
+
+#contact .register-desc { font-size: 15px; max-width: 560px; }
+
+#event-register .register-title { background: none; border: none; border-radius: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; padding: 0; }
+
+#event-register .register-title:hover { transform: none; border-color: transparent; box-shadow: none; letter-spacing: -0.5px; }
+
+.section-header h2 { background: none; border: none; border-radius: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; padding: 0; }
+
+.section-header h2:hover { transform: none; border-color: transparent; box-shadow: none; letter-spacing: -1px; }
+
+.register-section .register-panel { background: #fff; border-radius: 12px; padding: 36px; box-shadow: 0 4px 20px rgba(0,0,0,.06); }
+
+.register-section .register-submit-btn { display: inline-flex; align-items: center; gap: 10px; padding: 14px 42px; font-size: 16px; font-weight: 700; color: #fff; background: linear-gradient(135deg, #155e75, #0f766e); border: none; border-radius: 10px; cursor: pointer; transition: all .3s ease; box-shadow: 0 6px 20px rgba(15,118,110,.35); text-transform: uppercase; letter-spacing: .5px; }
+
+.register-section .register-submit-btn:hover { background: linear-gradient(135deg, #0f766e, #134e4a); box-shadow: 0 10px 30px rgba(15,118,110,.5); transform: translateY(-2px); color: #fff; }
+
+.register-section .register-submit-btn:focus { outline: none; box-shadow: 0 0 0 4px rgba(21,94,117,.3), 0 6px 20px rgba(15,118,110,.35); }
+
+.register-section .register-success-banner { display: none; text-align: center; padding: 28px 24px; background: linear-gradient(135deg, #d4edda, #c3e6cb); border-radius: 10px; border: 1px solid #b1dfbb; margin-top: 20px; }
+
+.register-section .register-success-banner .register-success-icon { font-size: 48px; color: #28a745; margin-bottom: 12px; }
+
+.register-section .register-success-banner .register-success-title { font-size: 20px; font-weight: 700; color: #155724; margin-bottom: 8px; }
+
+.register-section .register-success-banner .register-success-text { font-size: 14px; color: #3c763d; margin-bottom: 16px; }
+
+.register-section .register-success-banner .register-success-close { padding: 8px 24px; font-size: 14px; font-weight: 600; color: #155724; background: #fff; border: 1px solid #b1dfbb; border-radius: 6px; cursor: pointer; transition: all .2s ease; }
+
+.register-section .register-success-banner .register-success-close:hover { background: #155724; color: #fff; border-color: #155724; }
+
+@media (max-width: 768px) {
+  .register-section .register-title { font-size: 42px; }
+  .register-section .register-desc { font-size: 17px; }
+  .register-section .register-panel { padding: 24px; }
+  .register-section .register-submit-btn { padding: 12px 28px; font-size: 14px; }
+}
+/* ============================================================
+   EVENT REGISTER FORM STYLES
+   ============================================================ */
+
+.register-section .register-panel {
+  background: #fff;
+  border: 1px solid #e8ecf1;
+  border-radius: 18px;
+  padding: 40px 38px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
+  position: relative;
+  overflow: hidden;
+}
+
+.register-section .register-panel::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, #0f766e, #155e75, #0f766e);
+}
+
+.register-section .register-panel .form-control {
+  border: 1.5px solid #d8e0e8;
+  border-radius: 10px;
+  font-size: 14px;
+  padding: 11px 15px;
+  background: #fbfcfe;
+  transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+}
+
+.register-section .register-panel .form-control::-webkit-input-placeholder { color: #9aa7b4; }
+
+.register-section .register-panel .form-control:focus {
+  border-color: var(--primary);
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(21, 94, 117, .12);
+}
+
+.register-section .register-panel .form-group select.form-control {
+  color: #4b5563;
+}
+
+.register-section .register-panel label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1a2332;
+  margin-bottom: 7px;
+  letter-spacing: .2px;
+}
+
+.register-section .register-panel .validation {
+  color: #dc2626;
+  display: none;
+  margin: 4px 0 0;
+  font-weight: 400;
+  font-size: 12.5px;
+}
+
+.register-section .register-panel input,
+.register-section .register-panel textarea,
+.register-section .register-panel select {
+  padding: 11px 15px;
+  border-radius: 10px;
+  box-shadow: none;
+  font-size: 14px;
+}
+
+.register-section .register-submit {
+  margin-top: 8px;
+}
+
+.register-section { padding: 80px 0; background: linear-gradient(180deg, #f0f4f8 0%, #e8eef5 40%, #f5f7fa 100%); position: relative; overflow: hidden; }
+
+.register-section .register-hero-overlay { position: absolute; top: 0; left: 0; right: 0; height: 180px; clip-path: polygon(0 0, 100% 0, 100% 80%, 0 100%); z-index: 0; background: linear-gradient(180deg, rgba(21,94,117,.06), transparent); }
+
+.register-section .register-panel { position: relative; z-index: 1; }
+
+.register-section .register-title { position: relative; z-index: 1; }
+
+.register-section .register-desc { position: relative; z-index: 1; }
+
+.register-section .register-success-banner { position: relative; z-index: 1; }
+
+@media (max-width: 768px) {
+  .register-section { padding: 60px 0; }
+  .register-section .register-hero-overlay { height: 100px; }
+  .register-section .register-title { font-size: 42px; }
+  .register-section .register-desc { font-size: 17px; }
+  .register-section .register-panel { padding: 24px; }
+  .register-section .register-submit-btn { padding: 12px 28px; font-size: 14px; }
+  #contact .register-title { font-size: 31px; }
+  #contact .register-desc { font-size: 14px; }
+}
+
+/* ============================================================
+   FULL BODY EVENT BACKGROUND STYLES
+   ============================================================ */
+.event-page-bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: -2;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.event-page-bg .event-bg-picture,
+.event-page-bg .event-bg-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}
+
+.event-page-bg .event-bg-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.12) 0%, rgba(15, 23, 42, 0.22) 45%, rgba(15, 23, 42, 0.35) 100%);
+  z-index: 1;
+}
+
+/* When event page has full-body background image */
+body.event-page-body {
+  background-color: #1e293b !important;
+  color: #e2e8f0;
+}
+
+body.event-page-body #intro.home-hero {
+  background: transparent;
+}
+
+/* Hero luôn hiện ảnh bg được chọn trong event admin */
+body.event-page-body #intro .hero-bg .hero-img,
+body.event-page-body #intro .hero-bg .hero-picture {
+  display: block !important;
+}
+
+body.event-page-body #intro .hero-overlay {
+  background: linear-gradient(to right, rgba(15, 23, 42, .58) 0%, rgba(15, 23, 42, .32) 55%, rgba(15, 23, 42, .12) 100%);
+}
+
+body.event-page-body #main {
+  position: relative;
+  z-index: 1;
+}
+
+body.event-page-body section {
+  background: transparent !important;
+}
+
+body.event-page-body .section-with-bg,
+body.event-page-body .section-bg,
+body.event-page-body .register-section {
+  background: rgba(15, 23, 42, 0.14) !important;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+body.event-page-body .section-header h2 {
+  color: #ffffff !important;
+}
+
+body.event-page-body .section-header p {
+  color: #cbd5e1 !important;
+}
+
+/* Lớp phủ mờ gradient như hero-overlay cho các section bên dưới */
+body.event-page-body #main section {
+  position: relative;
+  z-index: 1;
+}
+
+body.event-page-body #main section::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: rgba(15, 23, 42, 0.20);
+}
+
+body.event-page-body #main section > .container,
+body.event-page-body #main section > .container-fluid,
+body.event-page-body #main section > .section-header {
+  position: relative;
+  z-index: 1;
+}
+
+body.event-page-body .speaker,
+body.event-page-body .schedule-item,
+body.event-page-body .hotel,
+body.event-page-body .supporter-logo,
+body.event-page-body .faq-item,
+body.event-page-body .card-price,
+body.event-page-body .register-panel,
+body.event-page-body .benefit-card {
+  background: rgba(255, 255, 255, 0.55) !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #1a2332 !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.10) !important;
+}
+
+/* Nền trắng mờ cho phần giới thiệu diễn giả để text tối đọc rõ */
+body.event-page-body #speakers .speaker .details {
+  background: rgba(255, 255, 255, 0.88) !important;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border-top: 1px solid rgba(255, 255, 255, 0.5);
+}
+
+body.event-page-body #speakers .speaker .details h3,
+body.event-page-body #speakers .speaker .details a {
+  color: #1a2332 !important;
+}
+
+body.event-page-body #speakers .speaker .details h3 a {
+  color: #1a2332 !important;
+}
+
+body.event-page-body #speakers .speaker .details .speaker-role {
+  color: var(--primary) !important;
+}
+
+body.event-page-body #speakers .speaker .details .speaker-company,
+body.event-page-body #speakers .speaker .details .speaker-bio {
+  color: #334155 !important;
+}
+
+body.event-page-body #speakers .speaker .details .social a {
+  color: #334155 !important;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+body.event-page-body #speakers .speaker .details .social a:hover {
+  color: var(--primary) !important;
+  background: rgba(15, 23, 42, 0.10);
+}
+
+body.event-page-body .speaker h3 a,
+body.event-page-body .schedule-item h4,
+body.event-page-body .hotel h3 a,
+body.event-page-body .faq-item h4,
+body.event-page-body .card-price .card-title,
+body.event-page-body .register-title,
+body.event-page-body .benefit-card h3 {
+  color: #1a2332 !important;
+}
+
+body.event-page-body .speaker p,
+body.event-page-body .schedule-item p,
+body.event-page-body .faq-item p,
+body.event-page-body .register-desc,
+body.event-page-body .benefit-card p {
+  color: #334155 !important;
+}
+
+/* Fix back-to-top button z-index & position */
+.back-to-top {
+  z-index: 9999 !important;
+  right: 20px !important;
+  bottom: 85px !important;
+  width: 44px !important;
+  height: 44px !important;
+  line-height: 44px !important;
+  text-align: center !important;
+  border-radius: 50% !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3) !important;
+}
+
+.back-to-top i {
+  padding-top: 0 !important;
+  line-height: 44px !important;
+  font-size: 20px !important;
+}
+
+

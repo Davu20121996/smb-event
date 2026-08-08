@@ -1,0 +1,54 @@
+TÀI LIỆU ĐẶC TẢ CHỨC NĂNG: QUẢN LÝ VÉ VÀ CHECK-IN ZALO MINI APP (ADMIN UI & API)
+
+1. Tổng quan (Overview)
+Chức năng này quản lý vòng đời của Vé (Ticket) được cấp hoặc bán qua Zalo Mini App. 
+Nó bao gồm các API phục vụ Zalo Mini App hiển thị vé cho khách hàng, hệ thống API Check-in để soát vé, và Giao diện UI trên Admin để ban tổ chức (Admin) giám sát quá trình này.
+
+---
+
+2. Thiết kế Giao diện Admin (Admin UI Design)
+
+2.1. Quản lý Danh sách Vé (Ticket Management)
+- Hiển thị bảng danh sách vé: Mã vé (Ticket Code), Tên khách hàng (Zalo Name/SĐT), Loại vé (VIP, Standard), Trạng thái (Đang chờ, Đã Check-in, Hết hạn).
+- Bộ lọc (Filter): Lọc theo sự kiện, lọc theo loại vé, lọc theo trạng thái vé.
+- Export: Hỗ trợ xuất danh sách vé ra file Excel/CSV.
+
+2.2. Chi tiết Vé (Ticket Detail)
+- Xem thông tin chi tiết một vé cụ thể: Ngày mua, giá tiền (nếu có), lịch sử giao dịch.
+- QR Code: Hiển thị lại mã QR của vé để đối chiếu khi cần.
+- Nút Action: Có thể Hủy vé (Cancel/Revoke) hoặc Check-in thủ công (Manual Check-in) trong trường hợp khách quên điện thoại/lỗi hệ thống.
+
+2.3. Lịch sử Check-in (Check-in Logs)
+- Danh sách log thời gian thực: Tên khách, Mã vé, Thời gian Check-in chính xác (Timestamp), Vị trí/Cổng check-in (Gate), Người quét vé (Staff).
+- Trạng thái Check-in: Thành công, Thất bại (Lý do: Vé đã sử dụng, Vé sai sự kiện, Vé giả).
+
+---
+
+3. Đặc tả API Backend (API Specification)
+
+3.1. Nhóm API dành cho Khách hàng (Zalo Mini App - User Auth)
+Các API này yêu cầu xác thực bằng Token của người dùng đang dùng Mini App.
+
+- Lấy danh sách vé của tôi (My Tickets):
+  + Endpoint: GET /api/v1/zalo-app/user/tickets
+  + Response: Trả về danh sách vé (ID, Event Name, Ticket Type, Status).
+
+- Xem chi tiết một vé (Ticket Detail & QR Code):
+  + Endpoint: GET /api/v1/zalo-app/user/tickets/{ticket_id}
+  + Response: Chi tiết vé kèm theo chuỗi `qr_payload` (hoặc link ảnh QR Code) để quét tại quầy.
+
+3.2. Nhóm API dành cho Soát vé (Check-in Scanner App/Device)
+Các API này yêu cầu Token của Nhân viên soát vé (Staff/Admin).
+
+- Thực hiện Check-in (Scan Ticket):
+  + Endpoint: POST /api/v1/zalo-app/tickets/check-in
+  + Body: { "qr_payload": "mã_đọc_được_từ_qr", "gate_id": 2, "event_id": 10 }
+  + Response Success: Trả về thông tin khách hàng, báo loa "Check-in thành công".
+  + Response Error: Trả về mã lỗi chi tiết (VD: 400 - Vé đã sử dụng lúc 08:00 AM).
+
+---
+
+4. Yêu cầu Kỹ thuật & Phi chức năng
+- Chống giả mạo QR Code: Dữ liệu mã QR phải được mã hóa JWT hoặc có chữ ký số (Signature). Không lưu chuỗi ID đơn giản dưới dạng QR để tránh việc tự tạo QR giả.
+- Xử lý đồng thời (Concurrency): Dùng Database Transaction (Row locking - SELECT FOR UPDATE) hoặc Redis Lock để đảm bảo nếu 1 vé quét ở 2 cổng cùng 1 lúc thì chỉ có 1 cổng báo thành công.
+- Tốc độ phản hồi: API Check-in phải có thời gian phản hồi (Latency) cực thấp (< 200ms) để không gây ùn tắc tại cổng.

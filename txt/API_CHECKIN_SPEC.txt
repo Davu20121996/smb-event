@@ -1,0 +1,711 @@
+================================================================================
+        XÂY DỰNG API CHECK-IN SỰ KIỆN
+   (Lookup QR · Confirm Check-in · Undo Check-in)
+================================================================================
+
+Phạm vi: Thiết kế toàn bộ API và giao diện quét mã QR phục vụ check-in
+tại cổng sự kiện, bao gồm tra cứu mã, xác nhận check-in và hoàn tác check-in.
+
+================================================================================
+PHẦN 1 — TỔNG QUAN KIẾN TRÚC API CHECK-IN
+================================================================================
+
+BASE URL  : /admin/checkin
+AUTH      : Yêu cầu đăng nhập Admin (middleware: auth, can:manage-checkin)
+FORMAT    : JSON (Content-Type: application/json)
+METHOD    : POST cho tất cả endpoint thao tác dữ liệu
+
+Sơ đồ luồng:
+
+  [Nhân viên quét QR tại cổng]
+          │
+          ▼
+  [Giao diện Quét — /admin/checkin]   ← Camera QR hoặc nhập tay
+          │
+          │── Bước 1 ──► POST /admin/checkin/lookup
+          │               └─► Tra cứu thông tin khách theo checkin_code
+          │               └─► Trả về thông tin + trạng thái hiện tại
+          │
+          │── Bước 2 ──► POST /admin/checkin/confirm
+          │               └─► Xác nhận check-in → cập nhật DB
+          │               └─► Trả về kết quả thành công / đã check-in rồi
+          │
+          └── Hoàn tác ──► POST /admin/checkin/undo
+                          └─► Reset checked_in_at về null (nếu check-in nhầm)
+                          └─► Ghi log hành động hoàn tác
+
+================================================================================
+PHẦN 2 — API 1: LOOKUP QR (Tra Cứu Mã)
+================================================================================
+
+ENDPOINT : POST /admin/checkin/lookup
+MỤC ĐÍCH : Tra cứu thông tin khách dựa trên checkin_code vừa quét.
+           Không thay đổi dữ liệu, chỉ đọc và trả về.
+
+REQUEST BODY:
+  {
+    "checkin_code": "ATT-2026-X9K2P8AB"
+  }
+
+VALIDATION:
+  - checkin_code: required | string | max:50
+
+XỬ LÝ LOGIC:
+  1. Tìm Attendee::where('checkin_code', $code)->with('event')->first()
+  2. Nếu không tìm thấy → trả về lỗi 404
+  3. Nếu tìm thấy → trả về thông tin đầy đủ + trạng thái check-in
+
+RESPONSE — Thành công (200):
+  {
+    "status": "ok",
+    "data": {
+      "id"              : 42,
+      "name"            : "Nguyễn Văn A",
+      "email"           : "nguyenvana@example.com",
+      "phone"           : "0901234567",
+      "company"         : "ABC Corp",
+      "ticket_type"     : "VIP",
+      "event_name"      : "Tech Summit 2026",
+      "event_date"      : "2026-09-15",
+      "checkin_code"    : "ATT-2026-X9K2P8AB",
+      "checkin_status"  : "not_checked_in",  // hoặc "checked_in"
+      "checked_in_at"   : null,              // hoặc "2026-09-15 08:32:11"
+      "checked_in_by"   : null              // hoặc { id, name }
+    }
+  }
+
+RESPONSE — Không tìm thấy (404):
+  {
+    "status": "error",
+    "code"  : "NOT_FOUND",
+    "message": "Mã check-in không hợp lệ hoặc không tồn tại."
+  }
+
+RESPONSE — Sự kiện chưa diễn ra / đã kết thúc (422):
+  {
+    "status": "error",
+    "code"  : "EVENT_NOT_ACTIVE",
+    "message": "Sự kiện này chưa bắt đầu hoặc đã kết thúc."
+  }
+
+================================================================================
+PHẦN 3 — API 2: CONFIRM CHECK-IN (Xác Nhận Check-in)
+================================================================================
+
+ENDPOINT : POST /admin/checkin/confirm
+MỤC ĐÍCH : Xác nhận khách đã vào cổng — ghi nhận thời điểm và nhân viên quét.
+
+REQUEST BODY:
+  {
+    "checkin_code": "ATT-2026-X9K2P8AB"
+  }
+
+VALIDATION:
+  - checkin_code: required | string | exists:attendees,checkin_code
+
+XỬ LÝ LOGIC:
+  1. Tìm Attendee theo checkin_code
+  2. Kiểm tra trạng thái:
+     A. Nếu $attendee->checked_in_at != null
+        → Đã check-in rồi → Trả về cảnh báo (không ghi đè)
+     B. Nếu $attendee->status != 'confirmed'
+        → Đơn chưa được duyệt → Trả về lỗi (không cho check-in)
+     C. Nếu hợp lệ:
+        → $attendee->update([
+            'checked_in_at' => now(),
+            'checked_in_by' => auth()->id(),
+            'status'        => 'attended',
+          ])
+        → Ghi CheckinLog (xem Phần 6)
+        → Trả về thành công
+
+RESPONSE — Check-in thành công (200):
+  {
+    "status": "success",
+    "code"  : "CHECKED_IN",
+    "message": "Check-in thành công!",
+    "data": {
+      "name"          : "Nguyễn Văn A",
+      "ticket_type"   : "VIP",
+      "company"       : "ABC Corp",
+      "checked_in_at" : "2026-09-15 08:32:11",
+      "checked_in_by" : "Trần Thị B"
+    }
+  }
+
+RESPONSE — Đã check-in rồi (409 Conflict):
+  {
+    "status": "warning",
+    "code"  : "ALREADY_CHECKED_IN",
+    "message": "Vé này đã được check-in trước đó.",
+    "data": {
+      "name"          : "Nguyễn Văn A",
+      "checked_in_at" : "2026-09-15 08:15:44",
+      "checked_in_by" : "Lê Văn C"
+    }
+  }
+
+RESPONSE — Đơn chưa duyệt (403):
+  {
+    "status": "error",
+    "code"  : "NOT_CONFIRMED",
+    "message": "Đơn đăng ký của khách chưa được Ban tổ chức duyệt."
+  }
+
+RESPONSE — Mã không tồn tại (404):
+  {
+    "status": "error",
+    "code"  : "NOT_FOUND",
+    "message": "Mã check-in không hợp lệ."
+  }
+
+================================================================================
+PHẦN 4 — API 3: UNDO CHECK-IN (Hoàn Tác Check-in)
+================================================================================
+
+ENDPOINT : POST /admin/checkin/undo
+MỤC ĐÍCH : Hoàn tác check-in khi nhân viên quét nhầm hoặc khách chưa vào.
+           Chỉ Admin cấp cao hoặc người có quyền mới thực hiện được.
+
+REQUEST BODY:
+  {
+    "checkin_code" : "ATT-2026-X9K2P8AB",
+    "reason"       : "Quét nhầm — khách chưa vào cổng"
+  }
+
+VALIDATION:
+  - checkin_code : required | string | exists:attendees,checkin_code
+  - reason       : required | string | min:5 | max:255
+
+PHÂN QUYỀN:
+  Middleware riêng: can:undo-checkin  (chỉ role: super-admin, event-manager)
+
+XỬ LÝ LOGIC:
+  1. Tìm Attendee theo checkin_code
+  2. Kiểm tra: Nếu checked_in_at == null → Trả về lỗi (chưa check-in, không cần undo)
+  3. Lưu thông tin check-in cũ vào CheckinLog với action = 'undo'
+  4. Reset:
+     $attendee->update([
+       'checked_in_at' => null,
+       'checked_in_by' => null,
+       'status'        => 'confirmed',
+     ])
+  5. Ghi UndoLog: ai undo, lúc nào, lý do gì
+
+RESPONSE — Hoàn tác thành công (200):
+  {
+    "status" : "success",
+    "code"   : "UNDO_SUCCESS",
+    "message": "Đã hoàn tác check-in cho khách Nguyễn Văn A.",
+    "data": {
+      "name"              : "Nguyễn Văn A",
+      "previous_checkin"  : "2026-09-15 08:15:44",
+      "undone_by"         : "Admin Nguyễn",
+      "undone_at"         : "2026-09-15 08:17:02",
+      "reason"            : "Quét nhầm — khách chưa vào cổng"
+    }
+  }
+
+RESPONSE — Chưa check-in (422):
+  {
+    "status" : "error",
+    "code"   : "NOT_CHECKED_IN",
+    "message": "Khách này chưa check-in, không cần hoàn tác."
+  }
+
+RESPONSE — Không có quyền (403):
+  {
+    "status" : "error",
+    "code"   : "FORBIDDEN",
+    "message": "Bạn không có quyền hoàn tác check-in."
+  }
+
+================================================================================
+PHẦN 5 — GIAO DIỆN QUÉT QR DÀNH CHO NHÂN VIÊN
+================================================================================
+
+URL       : GET /admin/checkin
+File view : resources/views/admin/checkin/index.blade.php
+
+LAYOUT GIAO DIỆN (2 vùng chính):
+
+┌─────────────────────────────────────────────────────────┐
+│  [Camera QR Scanner — html5-qrcode]                     │
+│  ┌───────────────────────────────┐                      │
+│  │   📷 Khung quét camera        │   [Đổi Camera]       │
+│  │   (tự động detect QR)         │                      │
+│  └───────────────────────────────┘                      │
+│                                                         │
+│  ── HOẶC NHẬP TAY ──                                    │
+│  [____________________________] [🔍 Tra cứu]            │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│  KẾT QUẢ TRA CỨU:                                      │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  👤 Nguyễn Văn A                                  │  │
+│  │  🎫 VIP — ABC Corp                                │  │
+│  │  📅 Tech Summit 2026 — 15/09/2026                 │  │
+│  │  ✅ Trạng thái: Chưa Check-in                     │  │
+│  │                                                   │  │
+│  │  [✅ XÁC NHẬN CHECK-IN]   [❌ Hủy]               │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+
+TRẠNG THÁI HIỂN THỊ SAU KHI CONFIRM:
+
+  ✅ CHECK-IN THÀNH CÔNG:
+     → Badge xanh lớn + âm thanh "ting" (Audio API)
+     → Hiển thị: Tên khách, Loại vé, Công ty
+     → Tự reset sau 4 giây để quét mã tiếp theo
+
+  ⚠️ ĐÃ CHECK-IN TRƯỚC ĐÓ:
+     → Badge cam/vàng cảnh báo
+     → Hiển thị: "Đã check-in lúc HH:MM — bởi [Tên nhân viên]"
+     → Không tự reset — chờ nhân viên xử lý
+
+  ❌ MÃ KHÔNG HỢP LỆ:
+     → Badge đỏ + âm thanh "buzz"
+     → Hiển thị thông báo lỗi rõ ràng
+
+TÍNH NĂNG JAVASCRIPT:
+  - Thư viện camera: html5-qrcode (CDN hoặc npm)
+  - Sau khi quét: tự động gọi /admin/checkin/lookup qua fetch()
+  - Debounce 2 giây tránh quét liên tục cùng 1 mã
+  - Hỗ trợ chuyển camera trước ↔ sau (mobile/tablet)
+  - Fullscreen mode cho màn hình nhỏ (điện thoại nhân viên)
+
+================================================================================
+PHẦN 6 — BẢNG LOG CHECK-IN (checkin_logs)
+================================================================================
+
+Mục đích: Ghi lại toàn bộ lịch sử check-in và undo để kiểm tra sau sự kiện.
+
+Schema bảng `checkin_logs`:
+
+  Cột             | Kiểu           | Mô tả
+  ----------------+----------------+------------------------------------------
+  id              | bigint PK      |
+  attendee_id     | bigint FK      | FK → attendees.id
+  action          | enum           | 'checkin' / 'undo'
+  performed_by    | bigint FK      | FK → users.id (nhân viên thực hiện)
+  performed_at    | timestamp      | Thời điểm thực hiện
+  reason          | text NULL      | Lý do (bắt buộc khi action = 'undo')
+  ip_address      | varchar(45)    | IP của thiết bị thực hiện
+  user_agent      | text NULL      | Thông tin trình duyệt/thiết bị
+
+Model: app/Models/CheckinLog.php
+Migration: database/migrations/xxxx_create_checkin_logs_table.php
+
+================================================================================
+PHẦN 7 — THỐNG KÊ CHECK-IN REALTIME
+================================================================================
+
+URL API : GET /admin/checkin/stats
+Mục đích: Lấy số liệu tổng hợp cho dashboard check-in
+
+RESPONSE (200):
+  {
+    "total_registered" : 250,
+    "total_confirmed"  : 230,
+    "total_checked_in" : 187,
+    "total_absent"     : 43,
+    "checkin_rate"     : "81.3%",
+    "last_checkin"     : {
+      "name"        : "Trần Thị B",
+      "checked_in_at": "2026-09-15 09:42:11"
+    }
+  }
+
+Hiển thị trên giao diện quét:
+  [Tổng đăng ký: 250] [Đã Check-in: 187] [Tỷ lệ: 81.3%] [← Realtime mỗi 30s]
+
+================================================================================
+PHẦN 8 — ROUTES CẦN THÊM VÀO routes/web.php
+================================================================================
+
+Route::prefix('admin/checkin')->middleware(['auth', 'can:manage-checkin'])
+     ->name('admin.checkin.')->group(function () {
+
+    // Giao diện quét
+    Route::get('/',         [CheckinController::class, 'index'])->name('index');
+
+    // API tra cứu (không thay đổi dữ liệu)
+    Route::post('/lookup',  [CheckinController::class, 'lookup'])->name('lookup');
+
+    // API xác nhận check-in
+    Route::post('/confirm', [CheckinController::class, 'confirm'])->name('confirm');
+
+    // API hoàn tác check-in (quyền cao hơn)
+    Route::post('/undo',    [CheckinController::class, 'undo'])
+         ->middleware('can:undo-checkin')
+         ->name('undo');
+
+    // Thống kê realtime
+    Route::get('/stats',    [CheckinController::class, 'stats'])->name('stats');
+});
+
+================================================================================
+PHẦN 9 — DANH SÁCH FILE CẦN TẠO & CHỈNH SỬA
+================================================================================
+
+[TẠO MỚI] app/Http/Controllers/Admin/CheckinController.php
+             → Methods: index(), lookup(), confirm(), undo(), stats()
+
+[TẠO MỚI] app/Models/CheckinLog.php
+             → Model cho bảng checkin_logs
+
+[TẠO MỚI] database/migrations/xxxx_create_checkin_logs_table.php
+             → Bảng log lịch sử check-in & undo
+
+[TẠO MỚI] resources/views/admin/checkin/index.blade.php
+             → Giao diện quét QR Camera + nhập tay + hiển thị kết quả
+
+[SỬA ĐỔI] app/Models/Attendee.php
+             → Thêm relationship: hasMany(CheckinLog::class)
+             → Thêm scope: scopeCheckedIn(), scopeNotCheckedIn()
+
+[SỬA ĐỔI] routes/web.php
+             → Thêm route group admin.checkin.*
+
+[SỬA ĐỔI] app/Policies/AttendeePolicy.php (hoặc tạo mới CheckinPolicy.php)
+             → Định nghĩa quyền: manage-checkin, undo-checkin
+
+[SỬA ĐỔI] resources/views/admin/layouts/sidebar.blade.php (nếu có)
+             → Thêm menu item "Check-in" với icon QR scanner
+
+================================================================================
+PHẦN 10 — THỨ TỰ TRIỂN KHAI (IMPLEMENTATION ORDER)
+================================================================================
+
+Bước 1: Tạo migration bảng checkin_logs → php artisan migrate
+
+Bước 2: Tạo Model CheckinLog.php + Relationship với Attendee
+
+Bước 3: Tạo CheckinController.php với 5 method:
+         index / lookup / confirm / undo / stats
+
+Bước 4: Thêm routes vào routes/web.php
+
+Bước 5: Định nghĩa Policy / Gate quyền manage-checkin & undo-checkin
+
+Bước 6: Tạo View giao diện quét (index.blade.php):
+         - Tích hợp html5-qrcode qua CDN
+         - Viết JS xử lý fetch API lookup → confirm
+         - Hiển thị kết quả với animation + âm thanh
+
+Bước 7: Thêm thống kê realtime (polling 30 giây)
+
+Bước 8: Test toàn bộ:
+         - Quét mã hợp lệ → confirm thành công
+         - Quét lại mã đã check-in → cảnh báo "đã check-in lúc..."
+         - Quét mã sai → báo lỗi không tìm thấy
+         - Undo check-in → kiểm tra log ghi lại đúng
+
+================================================================================
+PHẦN 11 — CHI TIẾT GIAO DIỆN QUÉT QR CHO BAN TỔ CHỨC
+         (QR Scanner UI — Dành Riêng Cho Nhân Viên Tại Cổng Sự Kiện)
+================================================================================
+
+MỤC TIÊU:
+  Ban tổ chức mở trang /admin/checkin trên điện thoại hoặc máy tính bảng,
+  dùng camera quét mã QR trên điện thoại của khách → hệ thống tự động cập nhật
+  bảng `attendees` ghi nhận khách đã tham dự sự kiện (status = 'attended').
+
+--------------------------------------------------------------------------------
+11.1. LAYOUT TỔNG THỂ TRANG QUÉT QR (/admin/checkin)
+--------------------------------------------------------------------------------
+
+Trang được thiết kế tối ưu cho màn hình nhỏ (mobile/tablet) — nhân viên cầm tay.
+
+┌──────────────────────────────────────────────────────────────┐
+│  🎪 TECH SUMMIT 2026 — Check-in Tại Cổng                    │
+│  [📊 Đã vào: 187 / 250]  [Tỷ lệ: 74.8%]                    │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌────────────────────────────────────────┐                 │
+│  │                                        │                 │
+│  │        📷 CAMERA QR SCANNER            │                 │
+│  │   (Khung vuông — camera tự nhận QR)   │                 │
+│  │                                        │                 │
+│  │   [══════════ quét... ══════════]      │                 │
+│  │                                        │                 │
+│  └────────────────────────────────────────┘                 │
+│         [🔄 Đổi Camera]  [💡 Bật Đèn]                      │
+│                                                              │
+│  ──── HOẶC NHẬP MÃ TAY ────                                 │
+│  [ ATT-2026-________ ]  [🔍 Tra cứu]                        │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│  KẾT QUẢ:  (vùng kết quả — hiện sau khi quét)              │
+│                                                              │
+│  ✅ [CARD XANH] — Check-in thành công                       │
+│  ⚠️ [CARD CAM]  — Đã check-in trước đó                      │
+│  ❌ [CARD ĐỎ]   — Mã không hợp lệ / chưa duyệt             │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+11.2. CARD KẾT QUẢ — 3 TRẠNG THÁI HIỂN THỊ
+--------------------------------------------------------------------------------
+
+--- TRẠNG THÁI 1: CHECK-IN THÀNH CÔNG ---
+
+┌─────────────────────────────────────────┐
+│  ✅  CHECK-IN THÀNH CÔNG               │  ← Nền xanh lá, chữ trắng
+│─────────────────────────────────────────│
+│  👤  Nguyễn Văn A                      │
+│  🎫  Loại vé: VIP                      │
+│  🏢  ABC Corporation                   │
+│  📅  15/09/2026 — Tech Summit 2026     │
+│─────────────────────────────────────────│
+│  🕐  Vào lúc: 08:32:11                │
+│  👤  Quét bởi: Trần Thị B             │
+└─────────────────────────────────────────┘
+   → Phát âm thanh "ting" (beep thành công)
+   → Tự động đóng sau 4 giây để sẵn sàng quét tiếp
+
+--- TRẠNG THÁI 2: ĐÃ CHECK-IN TRƯỚC ĐÓ ---
+
+┌─────────────────────────────────────────┐
+│  ⚠️  VÉ NÀY ĐÃ ĐƯỢC CHECK-IN          │  ← Nền cam/vàng, chữ đen
+│─────────────────────────────────────────│
+│  👤  Nguyễn Văn A                      │
+│  🎫  Loại vé: VIP                      │
+│─────────────────────────────────────────│
+│  ⏰  Đã check-in lúc: 08:15:44         │
+│  👤  Bởi: Lê Văn C                    │
+│─────────────────────────────────────────│
+│  [🔄 Hoàn tác Check-in]  [✖ Đóng]     │
+└─────────────────────────────────────────┘
+   → Phát âm thanh cảnh báo "buzz"
+   → Không tự đóng — chờ nhân viên xử lý
+
+--- TRẠNG THÁI 3: MÃ KHÔNG HỢP LỆ ---
+
+┌─────────────────────────────────────────┐
+│  ❌  KHÔNG TÌM THẤY MÃ NÀY            │  ← Nền đỏ, chữ trắng
+│─────────────────────────────────────────│
+│  Mã: ATT-2026-XXXXXXXX                 │
+│  Mã check-in không hợp lệ hoặc không   │
+│  thuộc sự kiện này.                     │
+│─────────────────────────────────────────│
+│  [✖ Đóng và Quét lại]                  │
+└─────────────────────────────────────────┘
+   → Phát âm thanh lỗi "buzz buzz"
+   → Tự reset sau 5 giây
+
+--------------------------------------------------------------------------------
+11.3. LUỒNG JAVASCRIPT XỬ LÝ (FRONTEND FLOW)
+--------------------------------------------------------------------------------
+
+BƯỚC 1 — KHỞI TẠO CAMERA:
+  const html5QrCode = new Html5Qrcode("qr-reader");
+  html5QrCode.start(
+    { facingMode: "environment" },  // Camera sau mặc định
+    { fps: 10, qrbox: { width: 250, height: 250 } },
+    onScanSuccess,
+    onScanFailure
+  );
+
+BƯỚC 2 — KHI QUÉT ĐƯỢC MÃ (onScanSuccess):
+  function onScanSuccess(decodedText) {
+    // 1. Dừng camera tạm để tránh quét trùng
+    html5QrCode.pause();
+
+    // 2. Gọi API Lookup để xem thông tin khách
+    fetch('/admin/checkin/lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+      body: JSON.stringify({ checkin_code: decodedText })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.status === 'ok') {
+        // Hiển thị card thông tin + nút "Xác nhận Check-in"
+        showResultCard(data.data);
+      } else {
+        // Hiển thị card lỗi
+        showErrorCard(data.message);
+        // Resume camera sau 3 giây
+        setTimeout(() => html5QrCode.resume(), 3000);
+      }
+    });
+  }
+
+BƯỚC 3 — KHI NHẤN NÚT "XÁC NHẬN CHECK-IN":
+  function confirmCheckin(checkinCode) {
+    fetch('/admin/checkin/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+      body: JSON.stringify({ checkin_code: checkinCode })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.code === 'CHECKED_IN') {
+        // Cập nhật DB thành công → hiển thị card xanh
+        showSuccessCard(data.data);
+        playSound('success');
+        updateStats();  // Cập nhật số liệu [Đã vào: X / Y]
+        setTimeout(() => {
+          hideResultCard();
+          html5QrCode.resume();  // Sẵn sàng quét tiếp
+        }, 4000);
+
+      } else if (data.code === 'ALREADY_CHECKED_IN') {
+        showWarningCard(data.data);
+        playSound('warning');
+      }
+    });
+  }
+
+BƯỚC 4 — KHI NHẤN "HOÀN TÁC CHECK-IN":
+  function undoCheckin(checkinCode) {
+    const reason = prompt("Lý do hoàn tác check-in:");
+    if (!reason) return;
+
+    fetch('/admin/checkin/undo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+      body: JSON.stringify({ checkin_code: checkinCode, reason: reason })
+    })
+    .then(res => res.json())
+    .then(data => {
+      alert("✅ " + data.message);
+      hideResultCard();
+      html5QrCode.resume();
+      updateStats();
+    });
+  }
+
+DEBOUNCE / CHỐNG QUÉT TRÙNG:
+  - Lưu mã vừa quét vào biến lastScannedCode
+  - Nếu cùng mã được quét trong vòng 3 giây → bỏ qua
+  - Reset lastScannedCode sau 3 giây
+
+--------------------------------------------------------------------------------
+11.4. CẬP NHẬT BẢNG ATTENDEES KHI CHECK-IN THÀNH CÔNG
+--------------------------------------------------------------------------------
+
+Khi API /admin/checkin/confirm xử lý thành công, các cột sau được UPDATE:
+
+  Bảng: attendees
+
+  Cột              | Giá trị cũ       | Giá trị mới
+  -----------------+------------------+----------------------------------
+  status           | 'confirmed'      | 'attended'           ← Đã vào sự kiện
+  checked_in_at    | NULL             | now()                ← Thời điểm quét
+  checked_in_by    | NULL             | auth()->id()         ← ID nhân viên quét
+
+  Code PHP trong CheckinController@confirm:
+    $attendee->update([
+        'status'        => 'attended',
+        'checked_in_at' => now(),
+        'checked_in_by' => auth()->id(),
+    ]);
+
+  Đồng thời ghi vào bảng checkin_logs:
+    CheckinLog::create([
+        'attendee_id'  => $attendee->id,
+        'action'       => 'checkin',
+        'performed_by' => auth()->id(),
+        'performed_at' => now(),
+        'ip_address'   => $request->ip(),
+        'user_agent'   => $request->userAgent(),
+    ]);
+
+--------------------------------------------------------------------------------
+11.5. TÍNH NĂNG BỔ SUNG CỦA TRANG QUÉT
+--------------------------------------------------------------------------------
+
+A. ĐỔI CAMERA (Trước ↔ Sau):
+   - Nút [🔄 Đổi Camera] toggle giữa facingMode: "environment" và "user"
+   - Hữu ích khi nhân viên dùng tablet — camera sau cho góc quét tốt hơn
+
+B. BẬT ĐÈN FLASH:
+   - Nút [💡 Bật Đèn] bật torch của camera (html5-qrcode hỗ trợ)
+   - Tiện dụng khi quét trong điều kiện thiếu sáng
+
+C. NHẬP TAY MÃ CHECK-IN:
+   - Ô input + nút Tra cứu
+   - Hữu ích khi QR trên điện thoại khách bị mờ/vỡ màn hình
+   - Gọi cùng API /admin/checkin/lookup rồi flow tương tự
+
+D. THỐNG KÊ REALTIME (cập nhật mỗi 30 giây):
+   - Hiển thị góc trên: [Đã vào: 187 / 250] [74.8%]
+   - Gọi GET /admin/checkin/stats → cập nhật số liệu không reload trang
+
+E. CHẾ ĐỘ TOÀN MÀN HÌNH (Fullscreen):
+   - Nút Fullscreen để chiếm toàn bộ màn hình điện thoại
+   - Ẩn thanh địa chỉ trình duyệt → tăng diện tích camera
+
+F. DANH SÁCH CHECK-IN GẦN NHẤT (Recent):
+   - Hiển thị 5-10 khách check-in gần nhất phía dưới camera
+   - Giúp nhân viên kiểm tra nhanh ai vừa vào
+
+   VD:
+   ┌────────────────────────────────────────┐
+   │  VỪADO CHECK-IN                       │
+   │  08:45 — Nguyễn Văn A (VIP)          │
+   │  08:44 — Trần Thị B (Standard)       │
+   │  08:43 — Lê Hoàng C (VIP)            │
+   └────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+11.6. RESPONSIVE DESIGN — TỐI ƯU CHO ĐIỆN THOẠI NHÂN VIÊN
+--------------------------------------------------------------------------------
+
+  - Layout: Single column, không sidebar
+  - Camera chiếm 60% chiều cao màn hình
+  - Nút bấm lớn (min-height: 48px) dễ chạm
+  - Font lớn hơn bình thường (16px base)
+  - Card kết quả chiếm toàn chiều rộng màn hình
+  - Hỗ trợ PWA (Progressive Web App) — Add to Home Screen
+    → Nhân viên cài đặt như app thật, mở nhanh hơn
+
+  Meta tags cần thêm:
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+
+================================================================================
+PHẦN 12 — TÓM TẮT LUỒNG HOÀN CHỈNH (END-TO-END FLOW)
+================================================================================
+
+[BAN TỔ CHỨC mở /admin/checkin trên điện thoại]
+          │
+          ▼
+[Camera bật — hướng vào mã QR trên điện thoại khách]
+          │
+          ▼  (html5-qrcode detect QR)
+[JS gọi POST /admin/checkin/lookup]
+          │
+          ├── Không tìm thấy ──► Card đỏ "Mã không hợp lệ" → Camera resume
+          │
+          └── Tìm thấy ──► Hiển thị Card thông tin khách
+                    │
+                    ├── Đã check-in rồi ──► Card cam cảnh báo
+                    │                         └─► Nút "Hoàn tác" nếu nhầm
+                    │
+                    └── Chưa check-in ──► Nút [✅ XÁC NHẬN CHECK-IN]
+                              │
+                              ▼ (nhân viên nhấn nút)
+                    [JS gọi POST /admin/checkin/confirm]
+                              │
+                              ▼
+                    [DB UPDATE attendees SET
+                      status = 'attended',
+                      checked_in_at = now(),
+                      checked_in_by = user_id]
+                              │
+                              ▼
+                    [DB INSERT checkin_logs (log hành động)]
+                              │
+                              ▼
+                    [Card xanh "Check-in thành công!" + âm thanh ting]
+                              │
+                              ▼ (sau 4 giây)
+                    [Camera resume → Sẵn sàng quét người tiếp theo]
+
+================================================================================
+EOF
+================================================================================

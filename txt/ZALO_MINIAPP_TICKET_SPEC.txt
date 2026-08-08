@@ -1,0 +1,185 @@
+================================================================================
+        XÂY DỰNG API TICKET VÀ CHECK-IN (ZALO MINI APP)
+   (Danh sách vé · Chi tiết vé · Quét Check-in qua Mini App)
+================================================================================
+
+Phạm vi: Thiết kế toàn bộ API và giao diện quản lý vé cho Zalo Mini App, bao gồm
+tích hợp lấy danh sách vé của user, hiển thị chi tiết mã QR và API thực hiện
+check-in tại cổng bằng thiết bị quét.
+
+================================================================================
+PHẦN 1 — TỔNG QUAN KIẾN TRÚC API TICKET
+================================================================================
+
+BASE URL  : /api/v1/zalo-app
+AUTH      : Zalo Access Token (cho user) / Admin Token (cho thiết bị quét)
+FORMAT    : JSON (Content-Type: application/json)
+METHOD    : GET (lấy dữ liệu), POST (thao tác Check-in)
+
+Sơ đồ luồng:
+
+  [Khách hàng dùng Zalo Mini App]
+          │
+          │── Bước 1 ──► GET /zalo-app/user/tickets
+          │               └─► Lấy danh sách các vé đã mua/đăng ký
+          │
+          │── Bước 2 ──► GET /zalo-app/user/tickets/{id}
+          │               └─► Hiển thị chi tiết vé + Mã QR để qua cổng
+          │
+  [Nhân viên quét QR tại cổng]
+          │
+          └── Bước 3 ──► POST /zalo-app/tickets/check-in
+                          └─► Gửi mã QR payload lấy từ thiết bị quét
+                          └─► Hệ thống xác nhận và trả về kết quả
+
+================================================================================
+PHẦN 2 — API 1: LẤY DANH SÁCH VÉ CỦA USER (MY TICKETS)
+================================================================================
+
+ENDPOINT : GET /api/v1/zalo-app/user/tickets
+MỤC ĐÍCH : Lấy danh sách vé sự kiện của user đang đăng nhập trên Mini App.
+
+HEADERS:
+  Authorization: Bearer {zalo_user_token}
+
+XỬ LÝ LOGIC:
+  1. Xác thực Zalo Token để lấy user_id.
+  2. Query danh sách vé (attendees/tickets) của user_id này, kèm thông tin sự kiện.
+  3. Phân trang nếu cần (mặc định limit 20).
+
+RESPONSE — Thành công (200):
+  {
+    "status": "success",
+    "data": [
+      {
+        "ticket_id"     : 1024,
+        "event_name"    : "Vietnam Web Summit 2026",
+        "event_date"    : "2026-11-20 08:00:00",
+        "ticket_type"   : "VIP",
+        "status"        : "not_checked_in", // "not_checked_in", "checked_in", "expired"
+        "qr_code_url"   : "https://api.example.com/qr/1024.png"
+      }
+    ]
+  }
+
+================================================================================
+PHẦN 3 — API 2: CHI TIẾT VÉ & MÃ QR (TICKET DETAIL)
+================================================================================
+
+ENDPOINT : GET /api/v1/zalo-app/user/tickets/{ticket_id}
+MỤC ĐÍCH : Lấy chi tiết vé cụ thể và payload mã QR.
+
+HEADERS:
+  Authorization: Bearer {zalo_user_token}
+
+XỬ LÝ LOGIC:
+  1. Lấy thông tin vé theo ticket_id.
+  2. Đảm bảo vé này thuộc về user_id đang request (phân quyền).
+  3. Tạo payload mã QR (có ký JWT hoặc hash signature) để bảo mật.
+
+RESPONSE — Thành công (200):
+  {
+    "status": "success",
+    "data": {
+      "ticket_id"     : 1024,
+      "event_name"    : "Vietnam Web Summit 2026",
+      "location"      : "SECC, Quận 7, TP.HCM",
+      "ticket_type"   : "VIP",
+      "customer_name" : "Nguyễn Văn A",
+      "status"        : "not_checked_in",
+      "qr_payload"    : "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...", // Dùng để render QR trên App
+      "purchased_at"  : "2026-08-01 10:00:00"
+    }
+  }
+
+RESPONSE — Không có quyền/Không tìm thấy (403/404):
+  {
+    "status": "error",
+    "message": "Không tìm thấy vé hoặc bạn không có quyền truy cập."
+  }
+
+================================================================================
+PHẦN 4 — API 3: THỰC HIỆN CHECK-IN TỪ THIẾT BỊ QUÉT
+================================================================================
+
+ENDPOINT : POST /api/v1/zalo-app/tickets/check-in
+MỤC ĐÍCH : Xử lý mã QR khi nhân viên quét bằng ứng dụng hoặc máy quét.
+
+HEADERS:
+  Authorization: Bearer {admin_or_scanner_token}
+
+REQUEST BODY:
+  {
+    "qr_payload": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "gate_id": 1,
+    "event_id": 5
+  }
+
+VALIDATION:
+  - qr_payload: required, string
+  - event_id: required, integer
+
+XỬ LÝ LOGIC:
+  1. Verify và Decode `qr_payload` để lấy `ticket_id`. Nếu sai signature -> Báo lỗi.
+  2. Bắt Lock (Redis/DB Transaction) trên `ticket_id` để tránh check-in kép.
+  3. Query Ticket kiểm tra:
+     - Có thuộc sự kiện `event_id` không?
+     - Đã check-in chưa? (status == 'attended')
+  4. Cập nhật `checked_in_at` = now(), `status` = 'attended', `gate_id` = input.
+  5. Ghi log check-in.
+
+RESPONSE — Thành công (200):
+  {
+    "status": "success",
+    "code"  : "CHECKED_IN_SUCCESS",
+    "message": "Check-in thành công!",
+    "data": {
+      "customer_name" : "Nguyễn Văn A",
+      "ticket_type"   : "VIP"
+    }
+  }
+
+RESPONSE — Đã check-in trước đó (409 Conflict):
+  {
+    "status": "error",
+    "code"  : "ALREADY_CHECKED_IN",
+    "message": "Vé này đã được check-in trước đó lúc 08:15 AM."
+  }
+
+================================================================================
+PHẦN 5 — GIAO DIỆN ADMIN (UI QUẢN LÝ VÉ TỪ ZALO)
+================================================================================
+
+5.1. DANH SÁCH VÉ (Ticket Management)
+- Route: /admin/zalo-app/tickets
+- Tính năng:
+  + Hiển thị Grid/Table danh sách vé.
+  + Các cột: Mã vé, Người mua (Avatar Zalo, Tên), Sự kiện, Loại vé, Trạng thái (Đã vào cổng, Chưa vào, Hết hạn).
+  + Bộ lọc: Theo sự kiện, khoảng thời gian mua, trạng thái.
+
+5.2. CHI TIẾT VÉ (Ticket Detail Modal)
+- Khi click vào một vé, mở Modal hiển thị:
+  + Dữ liệu khách (SĐT, Email, Zalo ID).
+  + Lịch sử quét QR (Thời gian quét, thiết bị nào quét).
+  + Nút "Manual Check-in": Ban tổ chức có thể click để check-in thủ công nếu khách lỗi app.
+  + Nút "Revoke": Hủy vé nếu phát hiện gian lận.
+
+================================================================================
+PHẦN 6 — DANH SÁCH FILE CẦN TẠO & CHỈNH SỬA
+================================================================================
+
+[TẠO MỚI] app/Http/Controllers/Api/ZaloApp/TicketController.php
+             → Methods: index(), show(), checkIn()
+
+[SỬA ĐỔI] app/Models/Ticket.php (hoặc Attendee.php tùy kiến trúc hiện tại)
+             → Thêm phương thức tạo QR Payload (generateQrPayload())
+
+[SỬA ĐỔI] routes/api.php
+             → Thêm route group cho Zalo App Tickets.
+
+[TẠO MỚI] resources/views/admin/zalo_app/tickets/index.blade.php
+             → Giao diện quản trị danh sách vé.
+
+================================================================================
+EOF
+================================================================================

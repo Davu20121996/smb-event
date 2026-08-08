@@ -1,0 +1,65 @@
+@extends('layouts.main')
+
+@section('seo_title', __('frontend.seo_event_thanks_title', ['name' => $event->name ?? 'SMB+']))
+@section('seo_description', __('frontend.seo_event_thanks_desc'))
+
+@section('content')
+<main id="main" class="main-page">
+  <section id="event-thank-you" class="wow fadeIn section-tight">
+    <div class="container">
+      <div class="text-center" style="max-width: 640px; margin: 0 auto;">
+        <div class="share-thank-icon">
+          <i class="fa fa-check-circle-o" aria-hidden="true"></i>
+        </div>
+        <h2>{{ __('frontend.event_thanks') }}</h2>
+        <p class="body-md mt-3" style="color: var(--ink-muted);">
+          {{ __('frontend.event_thanks_sub') }}
+        </p>
+
+        @if($event->calendar_enabled)
+          @php
+            $calTitle = $event->meta_title ?: $event->name;
+            $calStart = $event->start_date ? preg_replace('/[^0-9]/', '', $event->start_date) : '';
+            $calEnd   = $event->end_date ? preg_replace('/[^0-9]/', '', $event->end_date) : '';
+            $googleCal = 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' . urlencode($calTitle) . '&dates=' . $calStart . '/' . $calEnd . '&details=' . urlencode(strip_tags($event->description ?? ''));
+            $outlookCal = 'https://outlook.live.com/calendar/0/action/compose?subject=' . urlencode($calTitle) . '&startdt=' . urlencode($event->start_date) . '&enddt=' . urlencode($event->end_date) . '&body=' . urlencode(strip_tags($event->description ?? ''));
+          @endphp
+          <div class="mt-4">
+            <p class="body-sm mb-2" style="color: var(--ink-muted);">{{ __('frontend.add_to_calendar') }}</p>
+            <div class="event-thank-actions">
+              <a href="{{ $googleCal }}" target="_blank" rel="noopener" class="btn-software-primary">
+                <i class="fa fa-calendar-check-o" aria-hidden="true"></i> Google Calendar
+              </a>
+              <a href="{{ $outlookCal }}" target="_blank" rel="noopener" class="btn-software-primary btn-soft">
+                <i class="fa fa-calendar-o" aria-hidden="true"></i> Outlook Calendar
+              </a>
+            </div>
+          </div>
+        @endif
+
+        @if($event->zalo_url || $event->fanpage_url)
+          <div class="mt-4">
+            <p class="body-sm mb-2" style="color: var(--ink-muted);">{{ __('frontend.join_community') }}</p>
+            <div class="event-thank-actions">
+              @if($event->zalo_url)
+                <a href="{{ $event->zalo_url }}" target="_blank" rel="noopener" class="btn-software-primary btn-soft">
+                  <i class="fa fa-comments" aria-hidden="true"></i> {{ __('frontend.zalo_community') }}
+                </a>
+              @endif
+              @if($event->fanpage_url)
+                <a href="{{ $event->fanpage_url }}" target="_blank" rel="noopener" class="btn-software-primary btn-soft">
+                  <i class="fa fa-facebook-square" aria-hidden="true"></i> Fanpage
+                </a>
+              @endif
+            </div>
+          </div>
+        @endif
+
+        <div class="mt-5">
+          <a href="{{ route('event') }}" class="text-link">{!! __('frontend.back_to_event') !!}</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+@endsection
