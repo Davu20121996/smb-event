@@ -23,9 +23,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /var/www/html
 
+COPY . .
+
+RUN composer install --no-interaction --prefer-dist --no-dev --optimize-autoloader
+
 COPY docker/app/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-EXPOSE 80
+EXPOSE 9000
 
 ENTRYPOINT ["entrypoint.sh"]
